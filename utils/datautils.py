@@ -63,6 +63,7 @@ class CustomJsonDataset(torch.utils.data.IterableDataset):
         for d in raw_data:
             tokenized_datasets.append(self.tokenize_function(d))
 
+        # 切分数据集?
         grouped_dataset = self.group_texts(tokenized_datasets)
         self.input_ids = grouped_dataset["input_ids"]
         self.labels = grouped_dataset["labels"]
@@ -86,6 +87,7 @@ class CustomJsonDataset(torch.utils.data.IterableDataset):
     def group_texts(self, examples):
         # Concatenate all texts.
         # Initialize an empty dictionary
+        # 把所有的数据都叠加在一起, 本来是list, 现在就直接全部拼接了
         concatenated_examples = {}
 
         # Loop through the list of dictionaries
@@ -97,9 +99,12 @@ class CustomJsonDataset(torch.utils.data.IterableDataset):
                     concatenated_examples[key] = []
                 # Append the value to the list associated with the key in dict_of_lists
                 concatenated_examples[key].extend(d[key])
+
+        # 获取全部的长度
         total_length = len(concatenated_examples["input_ids"])
         # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
         # customize this part to your needs.
+        # 丢弃后面的数据， drop reminder
         if total_length >= self.block_size:
             total_length = (total_length // self.block_size) * self.block_size
         # Split by chunks of max_len.
@@ -110,6 +115,7 @@ class CustomJsonDataset(torch.utils.data.IterableDataset):
             ]
             for k, t in concatenated_examples.items()
         }
+        # 获取标签结果, 本身可能tokenizer也就两个key, input_id和attention-mask
         result["labels"] = result["input_ids"].copy()
         return result
 

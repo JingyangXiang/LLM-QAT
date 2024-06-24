@@ -36,17 +36,21 @@ from utils.process_args import process_args
 from torch import distributed as dist
 from transformers import default_data_collator, Trainer
 
+# 设置获取日志生成器
 log = utils.get_logger("clm")
 
 
 def train():
+    # 初始化nccl
     dist.init_process_group(backend="nccl")
+    # 获取args
     model_args, data_args, training_args = process_args()
 
     log.info("Start to load model...")
     dtype = torch.bfloat16 if training_args.bf16 else torch.float
 
     if training_args.qat:
+        # 获取模型及其配置, config会逐级往下传入
         config = LlamaConfig.from_pretrained(model_args.input_model_filename)
         student_config = copy.deepcopy(config)
         student_config.w_bits = model_args.w_bits
@@ -70,6 +74,7 @@ def train():
         )
     model.cuda()
     if training_args.use_kd:
+        # 区别两个模型, 一个来自自定义的, 一个来自量化模型文件的
         teacher_model = transformers.AutoModelForCausalLM.from_pretrained(
             pretrained_model_name_or_path=model_args.input_model_filename,
             cache_dir=training_args.cache_dir,
@@ -96,6 +101,7 @@ def train():
     )
     log.info("Complete tokenizer loading...")
 
+    # 获取训练数据
     train_dataset, valid_dataset = datautils.get_train_val_dataset(
         train_path=data_args.train_data_local_path,
         valid_path=data_args.eval_data_local_path
@@ -108,11 +114,14 @@ def train():
     valid_data = datautils.CustomJsonDataset(
         valid_dataset, tokenizer, block_size=min(training_args.model_max_length, 1024)
     )
+    # 训练的时候, kv-cache没有用
     model.config.use_cache = False
     if training_args.use_kd:
         myTrainer = KDTrainer
     else:
         myTrainer = Trainer
+
+    # 初始化训练器
     trainer = myTrainer(
         model=model,
         tokenizer=tokenizer,
