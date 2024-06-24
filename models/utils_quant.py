@@ -22,8 +22,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import math
-
 import torch
 import torch.nn as nn
 
@@ -115,8 +113,8 @@ class AsymQuantizer(torch.autograd.Function):
                 # weight & hidden layer
                 alpha = (
                     (
-                        input.max(dim=-1, keepdim=True)[0]
-                        - input.min(dim=-1, keepdim=True)[0]
+                            input.max(dim=-1, keepdim=True)[0]
+                            - input.min(dim=-1, keepdim=True)[0]
                     )
                     .expand_as(input)
                     .detach()
@@ -127,8 +125,8 @@ class AsymQuantizer(torch.autograd.Function):
                 tmp = input.view(input.shape[0], input.shape[1], -1)
                 alpha = (
                     (
-                        tmp.max(dim=-1, keepdim=True)[0].unsqueeze(-1)
-                        - tmp.min(dim=-1, keepdim=True)[0].unsqueeze(-1)
+                            tmp.max(dim=-1, keepdim=True)[0].unsqueeze(-1)
+                            - tmp.min(dim=-1, keepdim=True)[0].unsqueeze(-1)
                     )
                     .expand_as(input)
                     .detach()
@@ -142,7 +140,7 @@ class AsymQuantizer(torch.autograd.Function):
             else:
                 raise ValueError
         input_normalized = (input - beta) / (alpha + 1e-8)
-        s = 2**num_bits - 1
+        s = 2 ** num_bits - 1
         quant_input = torch.round(input_normalized * s).div(s)
         output = quant_input * (alpha + 1e-8) + beta
 
@@ -164,14 +162,14 @@ class AsymQuantizer(torch.autograd.Function):
 
 class QuantizeLinear(nn.Linear):
     def __init__(
-        self,
-        *kargs,
-        symmetric=True,
-        bias=False,
-        w_bits=32,
-        a_bits=32,
-        act_layerwise=False,
-        weight_layerwise=False,
+            self,
+            *kargs,
+            symmetric=True,
+            bias=False,
+            w_bits=32,
+            a_bits=32,
+            act_layerwise=False,
+            weight_layerwise=False,
     ):
         super(QuantizeLinear, self).__init__(*kargs, bias=False)
         self.w_bits = w_bits
@@ -220,26 +218,14 @@ class QuantizeLinear(nn.Linear):
                     scaling_factor = 2 * torch.mean(abs(real_weights)).detach()
                 else:
                     scaling_factor = (
-                        2 * torch.mean(abs(real_weights), dim=1, keepdim=True).detach()
+                            2 * torch.mean(abs(real_weights), dim=1, keepdim=True).detach()
                     )
-                quan_weights_no_grad = (
-                    scaling_factor
-                    * (
-                        torch.round(
-                            torch.clamp(
-                                real_weights / scaling_factor, -clip_val, clip_val
-                            )
-                            * num_bits
-                            - 0.5
-                        )
-                        + 0.5
-                    )
-                    / num_bits
-                )
+                quan_weights_no_grad = (scaling_factor * (torch.round(
+                    torch.clamp(real_weights / scaling_factor, -clip_val,
+                                clip_val) * num_bits - 0.5) + 0.5) / num_bits)
 
-            weight = (
-                quan_weights_no_grad.detach() - real_weights.detach() + real_weights
-            )
+            weight = quan_weights_no_grad.detach() - real_weights.detach() + real_weights
+
         # Quantize inputs
         if self.a_bits < 32 and self.a_bits > 2:
             act_clip_val = torch.tensor([-2.0, 2.0])
