@@ -13,10 +13,12 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 print("Loading tokenizer")
-tokenizer = AutoTokenizer.from_pretrained("/home/sankuai/dolphinfs_xiangjingyang/huggingface.co/meta-llama/Llama-2-7b-hf")
+tokenizer = AutoTokenizer.from_pretrained(
+    "/home/sankuai/dolphinfs_xiangjingyang/huggingface.co/meta-llama/llama-7b-hf")
 print("Tokenizer loaded!")
 print("Loading model")
-model = AutoModelForCausalLM.from_pretrained("/home/sankuai/dolphinfs_xiangjingyang/huggingface.co/meta-llama/Llama-2-7b-hf")
+model = AutoModelForCausalLM.from_pretrained(
+    "/home/sankuai/dolphinfs_xiangjingyang/huggingface.co/meta-llama/llama-7b-hf")
 model = model.cuda()
 print("Model loaded!")
 
