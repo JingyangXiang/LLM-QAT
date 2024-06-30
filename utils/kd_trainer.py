@@ -7,11 +7,8 @@
 
 import functools
 import inspect
+from typing import Any, Dict, Union
 
-from collections import defaultdict
-from typing import Any, Dict, List, Optional, Union
-
-from . import utils
 import torch
 from apex import amp
 from fairscale.nn.data_parallel import (
@@ -26,8 +23,10 @@ from transformers.modeling_utils import PreTrainedModel, unwrap_model
 from transformers.trainer_pt_utils import (
     get_module_class_from_name,
 )
-from transformers.trainer_utils import FSDPOption, has_length, ShardedDDPOption
+from transformers.trainer_utils import FSDPOption, ShardedDDPOption
 from transformers.utils import is_torch_neuroncore_available, logging
+
+from . import utils
 
 logger = logging.get_logger(__name__)
 local_rank = utils.get_local_rank()
@@ -81,7 +80,7 @@ class KDTrainer(Trainer):
         return (tok_loss, student_outputs) if return_outputs else tok_loss
 
     def training_step(
-        self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]]
+            self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]]
     ) -> torch.Tensor:
         """
         Perform a training step on a batch of inputs.
@@ -196,10 +195,10 @@ class KDTrainer(Trainer):
                             min_num_params=self.args.fsdp_config["fsdp_min_num_params"],
                         )
                     elif (
-                        self.args.fsdp_config.get(
-                            "fsdp_transformer_layer_cls_to_wrap", None
-                        )
-                        is not None
+                            self.args.fsdp_config.get(
+                                "fsdp_transformer_layer_cls_to_wrap", None
+                            )
+                            is not None
                     ):
                         transformer_cls_to_wrap = set()
                         for layer_class in self.args.fsdp_config[

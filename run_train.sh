@@ -4,12 +4,14 @@
 #
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-
-torchrun --nproc_per_node=8 --master_port=15001 train.py \
---local_dir "/tmp/llama/" \
---input_model_filename "decapoda-research/llama-7b-hf" \
+input_model_filename=/home/sankuai/dolphinfs_xiangjingyang/huggingface.co/meta-llama/llama-7b-hf
+# dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+train_data_local_path=/home/sankuai/dolphinfs_xiangjingyang/LLM-QAT/gen_data/all_gen.jsonl
+torchrun --nproc_per_node=2 --master_port=15001 train.py \
+--local_dir "./llama" \
+--input_model_filename $input_model_filename \
 --output_model_filename "7B-finetuned" \
---train_data_local_path "gen_data.jsonl" \
+--train_data_local_path $train_data_local_path \
 --eval_data_local_path "wiki2.jsonl" \
 --do_train True \
 --do_eval True \
@@ -35,9 +37,9 @@ torchrun --nproc_per_node=8 --master_port=15001 train.py \
 --tf32 False \
 --gradient_checkpointing True \
 --qat True \
---w_bits $1 \
---a_bits $2 \
---kv_bits $3 \
+--w_bits 8 \
+--a_bits 8 \
+--kv_bits 8 \
 --use_kd True \
 --fsdp "full_shard auto_wrap" \
 --fsdp_transformer_layer_cls_to_wrap 'LlamaDecoderLayer'

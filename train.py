@@ -19,22 +19,19 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-import math
-from models.configuration_llama import LlamaConfig
-from models.modeling_llama_quant import (
-    LlamaForCausalLM as LlamaForCausalLMQuant,
-)
 import copy
+import math
+
 import torch
 import transformers
-from utils import utils
-from utils import datautils
-
-from utils.kd_trainer import KDTrainer
-
-from utils.process_args import process_args
 from torch import distributed as dist
 from transformers import default_data_collator, Trainer
+
+from models.configuration_llama import LlamaConfig
+from models.modeling_llama_quant import LlamaForCausalLM as LlamaForCausalLMQuant
+from utils import datautils, utils
+from utils.kd_trainer import KDTrainer
+from utils.process_args import process_args
 
 # 设置获取日志生成器
 log = utils.get_logger("clm")

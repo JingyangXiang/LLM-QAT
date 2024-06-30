@@ -39,18 +39,18 @@ def get_train_val_dataset(train_path, valid_path=None):
     f.close()
     train_data = []
     valid_data = []
-    if valid_path:
-        f = open(valid_path, "r", encoding="utf-8")
-        while True:
-            line = f.readline()
-            if not line:
-                break
-            valid_data.append(json.loads(line))
-        f.close()
-        train_data = data
-    else:
-        train_data = data[10000:]
-        valid_data = data[:10000]
+    # if valid_path:
+    #     f = open(valid_path, "r", encoding="utf-8")
+    #     while True:
+    #         line = f.readline()
+    #         if not line:
+    #             break
+    #         valid_data.append(json.loads(line))
+    #     f.close()
+    #     train_data = data
+    # else:
+    train_data = data[50:]
+    valid_data = data[:50]
     return train_data, valid_data
 
 
