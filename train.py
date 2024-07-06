@@ -19,22 +19,21 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
+import copy
 import math
+
+import torch
+import transformers
+from torch import distributed as dist
+from transformers import AutoModelForCausalLM, default_data_collator, Trainer
+
 from models.configuration_llama import LlamaConfig
 from models.modeling_llama_quant import (
     LlamaForCausalLM as LlamaForCausalLMQuant,
 )
-import copy
-import torch
-import transformers
-from utils import utils
-from utils import datautils
-
-from utils.kd_trainer import KDTrainer
-
+from utils import datautils, utils
+from utils.kd_trainer import KDModule, KDTrainer
 from utils.process_args import process_args
-from torch import distributed as dist
-from transformers import default_data_collator, Trainer
 
 log = utils.get_logger("clm")
 
@@ -52,7 +51,10 @@ def train():
         student_config.w_bits = model_args.w_bits
         student_config.a_bits = model_args.a_bits
         student_config.kv_bits = model_args.kv_bits
-        model = LlamaForCausalLMQuant.from_pretrained(
+
+        message = f"Train with (w_bit, a_bit, kv_bit): ({model_args.w_bits}, {model_args.a_bits}, {model_args.kv_bits})"
+        log.info(message)
+        student_model = LlamaForCausalLMQuant.from_pretrained(
             pretrained_model_name_or_path=model_args.input_model_filename,
             config=student_config,
             cache_dir=training_args.cache_dir,
@@ -60,17 +62,20 @@ def train():
             low_cpu_mem_usage=True,
             device_map=None if len(training_args.fsdp) > 0 else "auto",
         )
+        student_model.eval()
+        student_model.cuda()
+        log.info("Freeze student model...")
+        for param in student_model.parameters():
+            param.requires_grad = False
+        student_model.config.use_cache = False
+
     else:
-        model = transformers.LlamaForCausalLM.from_pretrained(
-            pretrained_model_name_or_path=model_args.input_model_filename,
-            cache_dir=training_args.cache_dir,
-            torch_dtype=dtype,
-            low_cpu_mem_usage=True,
-            device_map=None if len(training_args.fsdp) > 0 else "auto",
-        )
-    model.cuda()
+        raise NotImplementedError
+
+
+
     if training_args.use_kd:
-        teacher_model = transformers.AutoModelForCausalLM.from_pretrained(
+        teacher_model = AutoModelForCausalLM.from_pretrained(
             pretrained_model_name_or_path=model_args.input_model_filename,
             cache_dir=training_args.cache_dir,
             torch_dtype=dtype,
@@ -79,13 +84,17 @@ def train():
         )
         teacher_model.eval()
         teacher_model.cuda()
+        log.info("Freeze teacher model...")
         for param in teacher_model.parameters():
             param.requires_grad = False
         teacher_model.config.use_cache = False
-        model.kd_loss_scale = training_args.kd_loss_scale
-        model.teacher = teacher_model
+        model = KDModule(student_model, teacher_model)
+    else:
+        model = student_model
+
     log.info("Complete model loading...")
 
+    # 这个很正常, 按照正常的训练就可以，不需要任何自定义
     log.info("Start to load tokenizer...")
     tokenizer = transformers.LlamaTokenizer.from_pretrained(
         pretrained_model_name_or_path=model_args.input_model_filename,
@@ -96,31 +105,33 @@ def train():
     )
     log.info("Complete tokenizer loading...")
 
-    train_dataset, valid_dataset = datautils.get_train_val_dataset(
-        train_path=data_args.train_data_local_path,
-        valid_path=data_args.eval_data_local_path
-        if data_args.eval_data_local_path is not None
-        else None,
-    )
-    train_data = datautils.CustomJsonDataset(
-        train_dataset, tokenizer, block_size=training_args.model_max_length
-    )
-    valid_data = datautils.CustomJsonDataset(
-        valid_dataset, tokenizer, block_size=min(training_args.model_max_length, 1024)
-    )
-    model.config.use_cache = False
+    log.info("Start to load datasets...")
+    train_dataset, valid_dataset = datautils.get_train_val_dataset(model=model_args.input_model_filename)
+    train_data = datautils.CustomJsonDataset(train_dataset)
+    valid_data = datautils.CustomJsonDataset(valid_dataset)
+    log.info("Complete datasets loading...")
+    log.info("Train dataset size: {}, Val dataset size: {}".format(len(train_dataset), len(valid_dataset)))
+
     if training_args.use_kd:
-        myTrainer = KDTrainer
+        from utils.kd_trainer import KDLoss
+        trainer = KDTrainer(
+            model=model,
+            tokenizer=tokenizer,
+            args=training_args,
+            train_dataset=train_data if training_args.do_train else None,
+            eval_dataset=valid_data if training_args.do_eval else None,
+            data_collator=default_data_collator,
+            loss_func=KDLoss()
+        )
     else:
-        myTrainer = Trainer
-    trainer = myTrainer(
-        model=model,
-        tokenizer=tokenizer,
-        args=training_args,
-        train_dataset=train_data if training_args.do_train else None,
-        eval_dataset=valid_data if training_args.do_eval else None,
-        data_collator=default_data_collator,
-    )
+        trainer = Trainer(
+            model=model,
+            tokenizer=tokenizer,
+            args=training_args,
+            train_dataset=train_data if training_args.do_train else None,
+            eval_dataset=valid_data if training_args.do_eval else None,
+            data_collator=default_data_collator,
+        )
 
     if training_args.do_train:
         train_result = trainer.train()
