@@ -31,14 +31,12 @@ import torch
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
-
 from transformers.activations import ACT2FN
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
     SequenceClassifierOutputWithPast,
 )
-
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import (
     add_start_docstrings,
@@ -49,7 +47,6 @@ from transformers.utils import (
 
 from .configuration_llama import LlamaConfig
 from .utils_quant import QuantizeLinear, SymQuantizer
-
 
 logger = logging.get_logger(__name__)
 
@@ -370,9 +367,7 @@ class LlamaAttention(nn.Module):
             )
 
         # upcast attention to fp32
-        attn_weights = nn.functional.softmax(
-            attn_weights, dim=-1, dtype=torch.float32
-        ).to(query_states.dtype)
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
 
         attn_output = torch.matmul(attn_weights, value_states)
 

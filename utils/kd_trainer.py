@@ -7,11 +7,8 @@
 
 import functools
 import inspect
+from typing import Any, Dict, Union
 
-from collections import defaultdict
-from typing import Any, Dict, List, Optional, Union
-
-from . import utils
 import torch
 from apex import amp
 from fairscale.nn.data_parallel import (
@@ -26,8 +23,10 @@ from transformers.modeling_utils import PreTrainedModel, unwrap_model
 from transformers.trainer_pt_utils import (
     get_module_class_from_name,
 )
-from transformers.trainer_utils import FSDPOption, has_length, ShardedDDPOption
+from transformers.trainer_utils import FSDPOption, ShardedDDPOption
 from transformers.utils import is_torch_neuroncore_available, logging
+
+from . import utils
 
 logger = logging.get_logger(__name__)
 local_rank = utils.get_local_rank()
@@ -202,9 +201,7 @@ class KDTrainer(Trainer):
                         is not None
                     ):
                         transformer_cls_to_wrap = set()
-                        for layer_class in self.args.fsdp_config[
-                            "fsdp_transformer_layer_cls_to_wrap"
-                        ]:
+                        for layer_class in self.args.fsdp_config["fsdp_transformer_layer_cls_to_wrap"]:
                             transformer_cls = get_module_class_from_name(
                                 model, layer_class
                             )

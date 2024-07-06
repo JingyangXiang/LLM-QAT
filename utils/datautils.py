@@ -5,16 +5,10 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-import copy
 import json
-import logging
-import random
-from dataclasses import dataclass
-from typing import Dict, Sequence
 
 import numpy as np
 import torch
-
 
 IGNORE_INDEX = -100
 DEFAULT_PAD_TOKEN = "[PAD]"
