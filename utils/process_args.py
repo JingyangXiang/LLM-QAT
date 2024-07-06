@@ -65,6 +65,10 @@ class DataArguments:
         default=None, metadata={"help": "Eval data local path"}
     )
 
+    calib_dataset: Optional[str] = field(
+        default='wikitext', metadata={'help': "calib_dataset name"}
+    )
+
 
 
 @dataclass
