@@ -45,8 +45,9 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 
-from .configuration_llama import LlamaConfig
-from .utils_quant import QuantizeLinear, SymQuantizer
+from models.configuration_llama import LlamaConfig
+from models.utils_quant import QuantizeLinear
+from utils.fake_quant import ActPerTokenFakeQuantizer
 
 logger = logging.get_logger(__name__)
 
@@ -64,29 +65,16 @@ def _make_causal_mask(
     Make causal mask used for bi-directional self-attention.
     """
     bsz, tgt_len = input_ids_shape
-    mask = torch.full(
-        (tgt_len, tgt_len),
-        torch.tensor(torch.finfo(dtype).min, device=device),
-        device=device,
-    )
+    mask = torch.full((tgt_len, tgt_len), torch.tensor(torch.finfo(dtype).min, device=device), device=device, )
 
     mask_cond = torch.arange(mask.size(-1), device=device)
     mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
     mask = mask.to(dtype)
 
     if past_key_values_length > 0:
-        mask = torch.cat(
-            [
-                torch.zeros(
-                    tgt_len, past_key_values_length, dtype=dtype, device=device
-                ),
-                mask,
-            ],
-            dim=-1,
-        )
-    return mask[None, None, :, :].expand(
-        bsz, 1, tgt_len, tgt_len + past_key_values_length
-    )
+        mask = torch.cat([torch.zeros(
+            tgt_len, past_key_values_length, dtype=dtype, device=device), mask, ], dim=-1)
+    return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length)
 
 
 # Copied from transformers.models.bart.modeling_bart._expand_mask
@@ -245,10 +233,8 @@ class LlamaAttention(nn.Module):
         self.w_bits = config.w_bits
         self.a_bits = config.a_bits
 
-        self.act_clip_val_k = torch.tensor([-2.0, 2.0])
-        self.act_clip_val_v = torch.tensor([-2.0, 2.0])
-        self.act_quantizer_k = SymQuantizer
-        self.act_quantizer_v = SymQuantizer
+        self.act_quantizer_k = ActPerTokenFakeQuantizer.apply
+        self.act_quantizer_v = ActPerTokenFakeQuantizer.apply
         self.kv_bits = config.kv_bits
 
         if (self.head_dim * self.num_heads) != self.hidden_size:
@@ -289,11 +275,7 @@ class LlamaAttention(nn.Module):
         )
 
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
-        return (
-            tensor.view(bsz, seq_len, self.num_heads, self.head_dim)
-            .transpose(1, 2)
-            .contiguous()
-        )
+        return (tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous())
 
     def forward(
         self,
@@ -315,7 +297,7 @@ class LlamaAttention(nn.Module):
         value_states = self.v_proj(hidden_states)
 
         # KV_cache quantization
-        if self.kv_bits < 32:
+        if self.kv_bits not in [16, 32] and self.kv_bits < 16:
             key_states = self.act_quantizer_k.apply(
                 key_states, self.act_clip_val_k, self.kv_bits, False
             )
@@ -688,6 +670,11 @@ class LlamaModel(LlamaPreTrainedModel):
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
+
+        if hasattr(self, "RotateEmbedding"):
+            inputs_embeds = inputs_embeds @ self.RotateEmbedding
+
+
         # embed positions
         if attention_mask is None:
             attention_mask = torch.ones(

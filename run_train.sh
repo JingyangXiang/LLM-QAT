@@ -6,19 +6,17 @@
 # LICENSE file in the root directory of this source tree.
 
 torchrun --nproc_per_node=8 --master_port=15001 train.py \
---local_dir "/tmp/llama/" \
+--local_dir "./result/llama-7b-hf/" \
 --input_model_filename "decapoda-research/llama-7b-hf" \
---output_model_filename "7B-finetuned" \
---train_data_local_path "gen_data.jsonl" \
---eval_data_local_path "wiki2.jsonl" \
+--output_model_filename "llama-7b-hf" \
 --do_train True \
 --do_eval True \
 --model_max_length 2048 \
 --fp16 False \
---bf16 True \
+--bf16 False \
 --log_on_each_node False \
---logging_dir /tmp/output/runs/current \
---num_train_epochs 1 \
+--logging_dir ./result/llama-7b-hf \
+--num_train_epochs 20 \
 --per_device_train_batch_size 1 \
 --per_device_eval_batch_size 1 \
 --gradient_accumulation_steps 1 \

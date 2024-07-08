@@ -31,19 +31,30 @@ from models.configuration_llama import LlamaConfig
 from models.modeling_llama_quant import (
     LlamaForCausalLM as LlamaForCausalLMQuant,
 )
-from utils import datautils, utils
+from utils import datautils, rotation_utils, utils
 from utils.kd_trainer import KDModule, KDTrainer
 from utils.process_args import process_args
 
 log = utils.get_logger("clm")
 
 
+def skip(*args, **kwargs):
+    # This is a helper function to save time during the initialization!
+    pass
+
+
 def train():
     dist.init_process_group(backend="nccl")
+
     model_args, data_args, training_args = process_args()
 
     log.info("Start to load model...")
-    dtype = torch.bfloat16 if training_args.bf16 else torch.float
+    # 旋转过程中使用FP32, 否则误差很大
+    # BF16在旋转的那步会直接崩掉, 有问题
+    dtype = torch.bfloat16 if training_args.bf16 else torch.float32
+    torch.nn.init.kaiming_uniform_ = skip
+    torch.nn.init.uniform_ = skip
+    torch.nn.init.normal_ = skip
 
     if training_args.qat:
         config = LlamaConfig.from_pretrained(model_args.input_model_filename)
@@ -63,16 +74,27 @@ def train():
             device_map=None if len(training_args.fsdp) > 0 else "auto",
         )
         student_model.eval()
-        student_model.cuda()
-        log.info("Freeze student model...")
-        for param in student_model.parameters():
-            param.requires_grad = False
-        student_model.config.use_cache = False
 
+        log.info("Fuse RMSNorm/LayerNorm for student model...")
+        rotation_utils.fuse_layer_norms(student_model)
+
+        log.info("Rotate Embedding and Linear Weight for student model...")
+        rotation_utils.init_rotate_to_model(student_model)
+
+        log.info("Freeze student model...")
+        for name, param in student_model.named_parameters():
+            if any(matrix in name for matrix in
+                   ["RotateWeightOutIn", "RotateWeightIn", "RotateEmbedding", "RotateKV", "RotateGate"]):
+                # 不冻结旋转矩阵
+                log.info(f"Keep {name} Trainable...")
+                assert param.requires_grad is True
+            else:
+                # 冻结剩余的权重
+                param.requires_grad = False
+        student_model.config.use_cache = False
+        student_model.cuda()
     else:
         raise NotImplementedError
-
-
 
     if training_args.use_kd:
         teacher_model = AutoModelForCausalLM.from_pretrained(
@@ -134,13 +156,21 @@ def train():
         )
 
     if training_args.do_train:
-        train_result = trainer.train()
+        # 在测试前先看看量化之后的模型的PPL
+        metrics = trainer.evaluate()
+        try:
+            perplexity = math.exp(metrics["eval_loss"])
+        except OverflowError:
+            perplexity = float("inf")
+        log.info(f"Perplexity when do naive quantization is: {perplexity}")
+        trainer.train()
         trainer.save_state()
         utils.safe_save_model_for_hf_trainer(trainer, model_args.output_model_local_path)
 
     # Evaluation
     if training_args.do_eval:
         model.to("cuda")
+        model.eval()
         metrics = trainer.evaluate()
         max_eval_samples = len(valid_data)
         metrics["eval_samples"] = min(max_eval_samples, len(valid_data))
