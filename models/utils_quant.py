@@ -25,7 +25,7 @@
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils.fake_quant import ActPerTensorFakeQuantizer, ActPerTokenFakeQuantizer, WeightPerChannelFakeQuantizer, \
+from tools.fake_quant import ActPerTensorFakeQuantizer, ActPerTokenFakeQuantizer, WeightPerChannelFakeQuantizer, \
     WeightPerTensorFakeQuantizer
 
 

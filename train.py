@@ -31,9 +31,9 @@ from models.configuration_llama import LlamaConfig
 from models.modeling_llama_quant import (
     LlamaForCausalLM as LlamaForCausalLMQuant,
 )
-from utils import datautils, rotation_utils, utils
-from utils.kd_trainer import KDModule, KDTrainer
-from utils.process_args import process_args
+from tools import datautils, rotation_utils, utils
+from tools.kd_trainer import KDModule, KDTrainer
+from tools.process_args import process_args
 
 log = utils.get_logger("clm")
 
@@ -135,7 +135,7 @@ def train():
     log.info("Train dataset size: {}, Val dataset size: {}".format(len(train_dataset), len(valid_dataset)))
 
     if training_args.use_kd:
-        from utils.kd_trainer import KDLoss
+        from tools.kd_trainer import KDLoss
         trainer = KDTrainer(
             model=model,
             tokenizer=tokenizer,

@@ -47,7 +47,7 @@ from transformers.utils import (
 
 from models.configuration_llama import LlamaConfig
 from models.utils_quant import QuantizeLinear
-from utils.fake_quant import ActPerTokenFakeQuantizer
+from tools.fake_quant import ActPerTokenFakeQuantizer
 
 logger = logging.get_logger(__name__)
 
@@ -535,7 +535,7 @@ LLAMA_INPUTS_DOCSTRING = r"""
             Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors for
             more detail.
         return_dict (`bool`, *optional*):
-            Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
+            Whether or not to return a [`~tools.ModelOutput`] instead of a plain tuple.
 """
 
 
