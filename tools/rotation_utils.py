@@ -5,12 +5,18 @@ import numpy as np
 import torch
 import torch.nn as nn
 import tqdm
+from einops import rearrange
 
 
 class RotateModule(nn.Module):
     # 给全局的旋转矩阵
     def __init__(self, hidden_size, num_attention_heads=1, dtype=torch.float32, matrix_cost='min'):
         super(RotateModule, self).__init__()
+        self.params_dict = None
+        # 定义分解多少个矩阵
+        self.len_R = 0
+        # 定义因数
+        self.Ns = None
         self.hidden_size = hidden_size
         self.num_attention_heads = num_attention_heads
         self.dtype = dtype
@@ -20,14 +26,54 @@ class RotateModule(nn.Module):
     def register_rotate_matrix(self, matrix_cost='min'):
         assert matrix_cost in ['min', 'max']
         assert matrix_cost == 'min', 'only support min now'
-        N1, N2 = get_greatest_common_factor(self.hidden_size // self.num_attention_heads)
-        assert int(N1 * N2) == self.hidden_size // self.num_attention_heads
-        self.register_parameter("R1", nn.Parameter(get_orthogonal_matrix(N1, mode='random', dtype=self.dtype)))
-        self.register_parameter("R2", nn.Parameter(get_orthogonal_matrix(N2, mode='random', dtype=self.dtype)))
+        self.Ns = get_greatest_common_factor(self.hidden_size // self.num_attention_heads)
+        self.len_R = len(self.Ns)
+        assert np.prod(self.Ns) == self.hidden_size // self.num_attention_heads
+        assert len(self.Ns) == 2, f"only support len(Ns) = {len(self.Ns)} now"
 
-    def forward(self):
-        return torch.kron(self.R1, self.R2)
+        param_dict = {}
 
+        for index, N in enumerate(self.Ns):
+            param_dict[f'R{index}'] = nn.Parameter(get_orthogonal_matrix(N, mode='random', dtype=self.dtype))
+
+        self.params_dict = nn.ParameterDict(param_dict)
+
+    def forward(self, input, mode='weight_input'):
+        # TODO: 目前只能支持分解成2个矩阵, 计算等价, 这里最好加一个单元测试以防万一
+        # TODO: 前向传播逻辑需要修改
+        R0, R1 = self.params_dict['R0'], self.params_dict['R1']
+        N0, N1 = self.Ns[0], self.Ns[1]
+        # for index in range(1, self.len_R):
+        #     R0 = torch.kron(R0, self.params_dict[f'R{index}'])
+        if mode.endswith("1"):
+            raise ValueError("Test mode is not support when training")
+        if mode == 'weight_input':
+            # torch.matmul(W_, Q)
+            output = torch.einsum('ij,aik,km->ajm', R0, rearrange(input, 'b (h c)->b h c', h=N0), R1)
+            output = output.reshape(N0 * N1, -1)
+        elif mode == 'weight_input1':
+            # torch.matmul(W_, Q)
+            output = torch.matmul(input, torch.kron(R0, R1))
+        elif mode == 'weight_output':
+            # torch.matmul(Q.T, W)
+            output = torch.einsum('ij,ika,km->jma', R0, rearrange(input, '(h c) b->h c b', h=N0), R1)
+            output = output.reshape(-1, N0 * N1)
+        elif mode == 'weight_output1':
+            # torch.matmul(Q.T, W)
+            output = torch.matmul(torch.kron(R0, R1).t(), input)
+        elif mode == 'data_input':
+            # torch.matmul(data, Q)
+            assert len(input.shape) == 3
+            output = torch.einsum('ij,aik,km->ajm', R0, rearrange(input, 'b h (t p)->(b h) t p', t=N0), R1)
+            output = output.view_as(input)
+        elif mode == 'data_input1':
+            # torch.matmul(data, Q)
+            assert len(input.shape) == 3
+            output = torch.matmul(input, torch.kron(R0, R1))
+        else:
+            raise NotImplementedError
+
+        return output
 
 @torch.no_grad()
 def fuse_ln_linear(layernorm: torch.nn.Module, linear_layers: typing.Iterable[torch.nn.Linear]) -> None:
@@ -144,3 +190,41 @@ def random_orthogonal_matrix(size, dtype=torch.float32):
     q, r = torch.linalg.qr(random_matrix)
     q *= torch.sign(torch.diag(r)).unsqueeze(0)
     return q
+
+
+if __name__ == '__main__':
+    def diff_abs_max(output1, output2):
+        return (output2 - output1).abs().max()
+
+
+    device = 'mps'
+    if device == 'mps':
+        func = torch.mps.synchronize
+    else:
+        func = torch.cpu.synchronize
+    num = 10
+    N0_ = 2 ** num
+    N1_ = 1
+    batch_size = 4
+    token_num = 10
+    for i in range(num + 1):
+        N0 = N0_ // (2 ** i)
+        N1 = N1_ * (2 ** i)
+        weight = torch.randn(N0 * N1, N0 * N1, device=device, dtype=torch.float32)
+        data = torch.randn(batch_size, token_num, N0 * N1).to(device)
+        rotate_module = RotateModule(hidden_size=N0 * N1).to(device)
+
+        weight_input = rotate_module(weight, mode='weight_input')
+        weight_input1 = rotate_module(weight, mode='weight_input1')
+
+        weight_output = rotate_module(weight, mode='weight_output')
+        weight_output1 = rotate_module(weight, mode='weight_output1')
+
+        data_input = rotate_module(data, mode='data_input')
+        data_input1 = rotate_module(data, mode='data_input1')
+
+        print(f"(N0, N1, diff1, diff2, diff3): "
+              f"({N0:5}, {N1:5}, "
+              f"{diff_abs_max(weight_input, weight_input1):.5f}, "
+              f"{diff_abs_max(weight_output, weight_output1):.5f}, "
+              f"{diff_abs_max(data_input, data_input1):})")
