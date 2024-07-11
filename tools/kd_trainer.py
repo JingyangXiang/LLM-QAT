@@ -19,6 +19,8 @@ from transformers.trainer_utils import EvalPrediction
 from transformers.training_args import TrainingArguments
 from transformers.utils import logging
 
+from tools.optimizer import CayleyAdamW
+
 logger = logging.get_logger(__name__)
 
 
@@ -27,7 +29,7 @@ class KDLoss(nn.Module):
         super().__init__()
         self.loss_func = nn.CrossEntropyLoss()
 
-    def forward(self, model, inputs, args, return_outputs):
+    def forward(self, model, inputs, return_outputs):
         if self.training:
             student_output, teacher_output = model(**inputs)
             loss = self.loss_func(student_output.get("logits"), teacher_output.get("logits").detach())
@@ -83,11 +85,33 @@ class KDTrainer(transformers.Trainer):
         if self.loss_func is None:
             loss = super().compute_loss(model, inputs, return_outputs)
         else:
-            loss = self.loss_func(model, inputs, self.args, return_outputs)
+            loss = self.loss_func(model, inputs, return_outputs)
         return loss
 
-    def create_optimizer(self):
-        super().create_optimizer()
+    def create_optimizer(self) -> "torch.optim.Optimizer":
+        if self.optimizer is None:
+            self.optimizer = create_custom_optimzer(self.model, self.args)
+        return super().create_optimizer()
+
+
+def create_custom_optimzer(
+        model: "PreTrainedModel",
+        training_args: "TrainingArguments"
+) -> Optional["torch.optim.Optimizer"]:
+    # 粗略的
+    if training_args.optim == 'cayley_adamw':
+        learning_rate = training_args.learning_rate
+        beta1 = training_args.adam_beta1
+        beta2 = training_args.adam_beta2
+        rotate_paramaters = []
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                print(f"Trainable: {name}, shape: {param.shape}")
+                rotate_paramaters.append(param)
+                assert any([f"R{i}" in name for i in range(10)])
+                assert len(param.shape) == 2
+
+        return CayleyAdamW(params=rotate_paramaters, betas=(beta1, beta2), lr=learning_rate)
 
 
 class KDModule(nn.Module):
@@ -99,7 +123,7 @@ class KDModule(nn.Module):
     def forward(self, input):
         if self.training:
             student_output = self.student_model(**input)
-            with torch.no_grad():
+            with torch.inference_mode():
                 teacher_output = self.teacher_model(**input)
             return student_output, teacher_output
         else:
