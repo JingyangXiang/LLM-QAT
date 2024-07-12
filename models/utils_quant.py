@@ -69,13 +69,16 @@ class QuantizeLinear(nn.Linear):
         weight = self.weight
 
         if hasattr(self, "RotateWeightIn"):
-            weight = weight @ self.RotateWeightIn
+            weight = self.RotateWeightIn(weight, mode='weight_inpput')
 
         if hasattr(self, "RotateWeightOut"):
-            weight = self.RotateWeightOut.t() @ weight
+            weight = self.RotateWeightOut(weight, mode='weight_output')
 
         if self.w_bits not in [16, 32]:
             weight = self.weight_quant(weight, self.w_bits)
+
+        if hasattr(self, "RotateDataIn"):
+            input = self.RotateDataIn(weight, mode='data_input')
 
         # Quantize inputs
         if self.a_bits not in [16, 32]:

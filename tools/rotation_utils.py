@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import tqdm
-from einops import rearrange
+from einops import einsum, rearrange, repeat
 
 
 class RotateModule(nn.Module):
@@ -34,7 +34,12 @@ class RotateModule(nn.Module):
         param_dict = {}
 
         for index, N in enumerate(self.Ns):
-            param_dict[f'R{index}'] = nn.Parameter(get_orthogonal_matrix(N, mode='random', dtype=self.dtype))
+            if self.num_attention_heads == 1:
+                param_dict[f'R{index}'] = nn.Parameter(get_orthogonal_matrix(N, mode='random', dtype=self.dtype))
+            else:
+                param_dict[f'R{index}'] = nn.Parameter(
+                    repeat(get_orthogonal_matrix(N, mode='random', dtype=self.dtype), 'i j -> k i j',
+                           k=self.num_attention_heads))
 
         self.params_dict = nn.ParameterDict(param_dict)
 
@@ -70,10 +75,46 @@ class RotateModule(nn.Module):
             # torch.matmul(data, Q)
             assert len(input.shape) == 3
             output = torch.matmul(input, torch.kron(R0, R1))
+        elif mode in ['data_qk', ]:
+            assert len(input.shape) == 4 and len(R0.shape) == 3 and len(R1.shape) == 3
+            output = torch.einsum('tij,taik,tkm->tajm', R0, rearrange(input, 'b m h (t p)->m (b h) t p', t=N0), R1)
+            output = rearrange(output, "m (b h) t p -> b m h (t p)", b=input.shape[0])
+            output = output.view_as(input)
+        elif mode in ['data_qk1', ]:
+            rotate = einsum(R0, R1, "a b c, a d e -> a b d c e")
+            rotate = rearrange(rotate, 'a b d c e -> a (b d) (c e)')
+            output = torch.matmul(input, rotate)
+        elif mode == 'weight_v':
+            # [num_head, N1xN2, N1xN2]
+            assert len(input.shape) == 2 and len(R0.shape) == 3 and len(R1.shape) == 3
+            output = torch.einsum('hij,hika,hkm->hjma', R0,
+                                  rearrange(input, '(h b n) c -> h b n c', h=self.num_attention_heads, b=N0), R1)
+            output = rearrange(output, 'h j m a -> (h j m) a')
+            output = output.view_as(input)
+        elif mode == 'weight_v1':
+            rotate = einsum(R0, R1, "a b c, a d e -> a b d c e")
+            # [num_head, N1xN2, N1xN2]
+            rotate = rearrange(rotate, 'a b d c e -> a (b d) (c e)')
+            # [out_channel, in_channel] -> [num_heads, N1xN2, in_channel]
+            weight = input.reshape(self.num_attention_heads, -1, input.shape[-1])
+            output = torch.matmul(rotate.permute(0, 2, 1), weight)
+            output = output.reshape(-1, input.shape[-1])
+        elif mode == 'weight_o_proj':
+            output = torch.einsum('hij,ahik,hkm->ahjm', R0, rearrange(input, 'b (h o c)->b h o c', o=N0, c=N1), R1)
+            output = output.flatten(1)
+        elif mode == 'weight_o_proj1':
+            # torch.matmul(W_, Q)
+            rotate = einsum(R0, R1, "a b c, a d e -> a b d c e")
+            # [num_head, N1xN2, N1xN2]
+            rotate = rearrange(rotate, 'a b d c e -> a (b d) (c e)')
+            input = input.reshape(input.shape[0], self.num_attention_heads, -1)
+            output = torch.einsum('ohj,hji->ohi', input, rotate)
+            output = output.flatten(1)
         else:
             raise NotImplementedError
 
         return output
+
 
 @torch.no_grad()
 def fuse_ln_linear(layernorm: torch.nn.Module, linear_layers: typing.Iterable[torch.nn.Linear]) -> None:
@@ -153,13 +194,19 @@ def init_rotate_to_model(model):
         """剩下的都是需要Online计算的Rotate Matrix"""
         # KVCache的旋转塞给Attention
 
-        # KVCache可以直接旋转, 一个转Q, 一个转Q.t()就好
-        layer.self_attn.RotateKV = nn.Identity()
-        # 由于只有这里要online, 因此选择在Linear层里面只旋转Weight
-        # feature的旋转都放在外部显式的做, 但是feature的量化放到Linear里面去做
-        layer.mlp.RotateGate = nn.Identity()
+        # KVCache可以直接旋转, 两个都旋转Q就好, 因为本身就是会转置的, 这里需要的不同就是, 每个head得对应有自己的旋转矩阵
+        layer.self_attn.RotateDataQK = RotateModule(hidden_size=model.config.hidden_size,
+                                                    num_attention_heads=model.config.num_attention_heads)
+
         # 这里要对应的再去旋转一下down_proj, 因为外部的x已经通过旋转
-        layer.mlp.down_proj.RotateWeightIn = nn.Identity()
+        Q_down_proj = RotateModule(model.config.intermediate_size)
+        layer.mlp.down_proj.RotateDataIn = Q_down_proj
+        layer.mlp.down_proj.RotateWeightIn = Q_down_proj
+
+        # TODO: 这里还缺一个Value的旋转和对应的权重的旋转
+        Q_v_o = RotateModule(hidden_size=model.config.hidden_size, num_attention_heads=model.config.num_attention_heads)
+        layer.self_attn.RotateDataV = Q_v_o
+        layer.self_attn.o_proj = Q_v_o
 
     """经过这些操作之后, 在保持教师和学生都是FP32的情况下, 第一步教师和学生的输出应该是相等的"""
     return Q
@@ -228,3 +275,57 @@ if __name__ == '__main__':
               f"{diff_abs_max(weight_input, weight_input1):.5f}, "
               f"{diff_abs_max(weight_output, weight_output1):.5f}, "
               f"{diff_abs_max(data_input, data_input1):})")
+
+    for num_attention_heads in [2, 4, 8, 16]:
+        for i in range(num + 1):
+            N0 = N0_ // (2 ** i)
+            N1 = N1_ * (2 ** i)
+            weight = torch.randn(N0 * N1, N0 * N1, device=device, dtype=torch.float32)
+            data = torch.randn(batch_size, num_attention_heads, token_num, (N0 * N1) // num_attention_heads).to(device)
+            rotate_module = RotateModule(hidden_size=N0 * N1, num_attention_heads=num_attention_heads).to(device)
+
+            data_input = rotate_module(data, mode='data_qk')
+            data_input1 = rotate_module(data, mode='data_qk1')
+
+            output1 = torch.einsum('ihtj,ihkj->ihtk', data, data)
+            output2 = torch.einsum('ihtj,ihkj->ihtk', data_input, data_input)
+
+            print(f"(N0, N1, num_attention_heads, diff, attn): "
+                  f"({N0:5}, {N1:5} {num_attention_heads:5}, "
+                  f"{diff_abs_max(data_input, data_input1):5}, "
+                  f"{diff_abs_max(output1, output2):5})")
+
+    for num_attention_heads in [2, 4, 8, 16]:
+        for i in range(num + 1):
+            N0 = N0_ // (2 ** i)
+            N1 = N1_ * (2 ** i)
+            weight = torch.randn(N0 * N1, N0 * N1, device=device, dtype=torch.float32)
+            rotate_module = RotateModule(hidden_size=N0 * N1, num_attention_heads=num_attention_heads).to(device)
+            data_input = rotate_module(weight, mode='weight_v')
+            data_input1 = rotate_module(weight, mode='weight_v1')
+
+            output1 = torch.einsum('ij,ih->jh', data_input, data_input)
+            output2 = torch.einsum('ij,ih->jh', data_input1, data_input1)
+
+            print(f"(N0, N1, num_attention_heads, diff, attn): "
+                  f"({N0:5}, {N1:5} {num_attention_heads:5}, "
+                  f"{diff_abs_max(data_input, data_input1):5}, "
+                  f"{diff_abs_max(output1, output2):5})")
+
+    for num_attention_heads in [2, 4, 8, 16]:
+        for i in range(num + 1):
+            N0 = N0_ // (2 ** i)
+            N1 = N1_ * (2 ** i)
+            weight = torch.randn(N0 * N1, N0 * N1, device=device, dtype=torch.float32)
+            rotate_module = RotateModule(hidden_size=N0 * N1, num_attention_heads=num_attention_heads).to(device)
+            data_input = rotate_module(weight, mode='weight_o_proj')
+            data_input1 = rotate_module(weight, mode='weight_o_proj1')
+
+            output1 = torch.einsum('ij,ih->jh', data_input, data_input)
+            output2 = torch.einsum('ij,ih->jh', data_input1, data_input1)
+
+            print(output1.shape, output2.shape, data_input.shape, data_input1.shape)
+            print(f"(N0, N1, num_attention_heads, diff, attn): "
+                  f"({N0:5}, {N1:5} {num_attention_heads:5}, "
+                  f"{diff_abs_max(data_input, data_input1):5}, "
+                  f"{diff_abs_max(output1, output2):5})")
