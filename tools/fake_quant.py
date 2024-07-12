@@ -40,7 +40,7 @@ class ActPerTokenFakeQuantizer(torch.autograd.Function):
         scales.clamp_(min=1e-5).div_(q_max)
         activation = torch.round(activation / scales) * scales
 
-        return activation
+        return activation.reshape(t_shape)
 
     @staticmethod
     def backward(ctx, grad_output):
