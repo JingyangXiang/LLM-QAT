@@ -52,6 +52,7 @@ def train():
     # 旋转过程中使用FP32, 否则误差很大
     # BF16在旋转的那步会直接崩掉, 有问题
     dtype = torch.bfloat16 if training_args.bf16 else torch.float32
+    assert dtype == torch.float32
     torch.nn.init.kaiming_uniform_ = skip
     torch.nn.init.uniform_ = skip
     torch.nn.init.normal_ = skip
@@ -83,8 +84,10 @@ def train():
 
         log.info("Freeze student model...")
         for name, param in student_model.named_parameters():
-            if any(matrix in name for matrix in
-                   ["RotateWeightOutIn", "RotateWeightIn", "RotateEmbedding", "RotateKV", "RotateGate"]):
+            # 当一组参数初始化之后幅值好几次的时候, 只会显示第一次的参数, 不过都判断一次就可以了
+            rotate_keys = ["RotateWeightOut", "RotateWeightIn", "RotateDataQK",
+                           "RotateEmbedding", "RotateDataV", "RotateO"]
+            if any(m in name for m in rotate_keys):
                 # 不冻结旋转矩阵
                 log.info(f"Keep {name} Trainable...")
                 assert param.requires_grad is True

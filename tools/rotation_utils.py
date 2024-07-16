@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import tqdm
 from einops import einsum, rearrange
+from transformers.models.llama.modeling_llama import LlamaRMSNorm
 
 
 class RotateModule(nn.Module):
@@ -41,6 +42,7 @@ class RotateModule(nn.Module):
                 # param_dict[f'R{index}'] = nn.Parameter(
                 #     repeat(get_orthogonal_matrix(N, mode='random', dtype=self.dtype), 'i j -> k i j',
                 #            k=self.num_attention_heads))
+                # 产生self.num_attention_heads个不同的矩阵
                 param_dict[f'R{index}'] = nn.Parameter(
                     torch.stack([get_orthogonal_matrix(N, mode='random', dtype=self.dtype) for _ in
                                  range(self.num_attention_heads)], dim=0))
@@ -52,68 +54,67 @@ class RotateModule(nn.Module):
         # TODO: 前向传播逻辑需要修改
         R0, R1 = self.params_dict['R0'], self.params_dict['R1']
         N0, N1 = self.Ns[0], self.Ns[1]
-        # for index in range(1, self.len_R):
-        #     R0 = torch.kron(R0, self.params_dict[f'R{index}'])
-        if mode.endswith("1"):
-            raise ValueError("Test mode is not support when training")
+        # if mode.endswith("1"):
+        #     raise ValueError("Test mode is not support when training")
         if mode == 'weight_input':
             # torch.matmul(W_, Q)
             output = torch.einsum('ij,aik,km->ajm', R0, rearrange(input, 'b (h c)->b h c', h=N0), R1)
-            output = output.reshape(N0 * N1, -1)
+            output = rearrange(output, "b h c-> b (h c)")
         elif mode == 'weight_input1':
             # torch.matmul(W_, Q)
             output = torch.matmul(input, torch.kron(R0, R1))
         elif mode == 'weight_output':
             # torch.matmul(Q.T, W)
-            output = torch.einsum('ij,ika,km->jma', R0, rearrange(input, '(h c) b->h c b', h=N0), R1)
-            output = output.reshape(-1, N0 * N1)
+            output = torch.einsum('i j, i k a, k m -> j m a', R0, rearrange(input, '(b h) c->b h c', b=N0), R1)
+            output = rearrange(output, "b h c-> (b h) c")
         elif mode == 'weight_output1':
             # torch.matmul(Q.T, W)
             output = torch.matmul(torch.kron(R0, R1).t(), input)
         elif mode == 'data_input':
             # torch.matmul(data, Q)
             assert len(input.shape) == 3
-            output = torch.einsum('ij,aik,km->ajm', R0, rearrange(input, 'b h (t p)->(b h) t p', t=N0), R1)
+            output = torch.einsum('e j, a e d, d m->a j m', R0, rearrange(input, 'b l (e d)->(b l) e d', e=N0), R1)
             output = output.view_as(input)
         elif mode == 'data_input1':
             # torch.matmul(data, Q)
             assert len(input.shape) == 3
             output = torch.matmul(input, torch.kron(R0, R1))
         elif mode in ['data_qk', ]:
+            # [batch_size, head_num, length, embed_dim]
             assert len(input.shape) == 4 and len(R0.shape) == 3 and len(R1.shape) == 3
-            output = torch.einsum('tij,taik,tkm->tajm', R0, rearrange(input, 'b m h (t p)->m (b h) t p', t=N0), R1)
+            output = torch.einsum('h e j, h a e d, h d m->h a j m', R0,
+                                  rearrange(input, 'b h l (e d)->h (b l) e d', e=N0), R1)
             output = rearrange(output, "m (b h) t p -> b m h (t p)", b=input.shape[0])
-            output = output.view_as(input)
         elif mode in ['data_qk1', ]:
             rotate = einsum(R0, R1, "a b c, a d e -> a b d c e")
             rotate = rearrange(rotate, 'a b d c e -> a (b d) (c e)')
-            output = torch.matmul(input, rotate)
+            output = torch.einsum("b h l d, h d m -> b h l m", input, rotate)
         elif mode == 'weight_v':
             # [num_head, N1xN2, N1xN2]
             assert len(input.shape) == 2 and len(R0.shape) == 3 and len(R1.shape) == 3
-            output = torch.einsum('hij,hika,hkm->hjma', R0,
+            output = torch.einsum('h b j,h b n c,h n m->h j m c', R0,
                                   rearrange(input, '(h b n) c -> h b n c', h=self.num_attention_heads, b=N0), R1)
-            output = rearrange(output, 'h j m a -> (h j m) a')
-            output = output.view_as(input)
+            output = rearrange(output, 'h j m c -> (h j m) c')
         elif mode == 'weight_v1':
             rotate = einsum(R0, R1, "a b c, a d e -> a b d c e")
             # [num_head, N1xN2, N1xN2]
             rotate = rearrange(rotate, 'a b d c e -> a (b d) (c e)')
             # [out_channel, in_channel] -> [num_heads, N1xN2, in_channel]
-            weight = input.reshape(self.num_attention_heads, -1, input.shape[-1])
-            output = torch.matmul(rotate.permute(0, 2, 1), weight)
-            output = output.reshape(-1, input.shape[-1])
+            output = torch.einsum("b l d, b l c -> b d c", rotate,
+                                  rearrange(input, "(b l) c-> b l c", b=self.num_attention_heads))
+            output = rearrange(output, "b l c -> (b l) c")
         elif mode == 'weight_o_proj':
-            output = torch.einsum('hij,ahik,hkm->ahjm', R0, rearrange(input, 'b (h o c)->b h o c', o=N0, c=N1), R1)
-            output = output.flatten(1)
+            output = torch.einsum('h l j,b h l c,h c m->b h j m', R0,
+                                  rearrange(input, 'b (h l c)->b h l c', l=N0, c=N1), R1)
+            output = rearrange(output, "b h j m -> b (h j m)")
         elif mode == 'weight_o_proj1':
             # torch.matmul(W_, Q)
             rotate = einsum(R0, R1, "a b c, a d e -> a b d c e")
             # [num_head, N1xN2, N1xN2]
             rotate = rearrange(rotate, 'a b d c e -> a (b d) (c e)')
-            input = input.reshape(input.shape[0], self.num_attention_heads, -1)
-            output = torch.einsum('ohj,hji->ohi', input, rotate)
-            output = output.flatten(1)
+            input = rearrange(input, "b (h c) -> b h c", h=self.num_attention_heads)
+            output = torch.einsum('b h c, h c i -> b h i', input, rotate)
+            output = rearrange(output, "b h i -> b (h i)")
         else:
             raise NotImplementedError
 
@@ -139,7 +140,7 @@ def fuse_ln_linear(layernorm: torch.nn.Module, linear_layers: typing.Iterable[to
 
 @torch.no_grad()
 def fuse_layer_norms(model):
-    layers = model.model.layers
+    layers = model1.model1.layers
 
     # Fuse the linear operations in Layernorm into the adjacent linear blocks.
     for layer in layers:
@@ -148,7 +149,7 @@ def fuse_layer_norms(model):
         # 每个LlamaDecoderLayer的AttentionLayer
         fuse_ln_linear(layer.input_layernorm, [layer.self_attn.q_proj, layer.self_attn.k_proj, layer.self_attn.v_proj])
 
-    fuse_ln_linear(model.model.norm, [model.lm_head])
+    fuse_ln_linear(model1.model1.norm, [model1.lm_head])
 
 
 def get_greatest_common_factor(N):
@@ -161,22 +162,22 @@ def get_greatest_common_factor(N):
 
 @torch.inference_mode()
 def init_rotate_to_model(model):
-    Q = RotateModule(model.config.hidden_size)
+    Q = RotateModule(model1.config.hidden_size)
 
-    config = model.config
+    config = model1.config
     num_heads = config.num_attention_heads
     model_dim = config.hidden_size
     head_dim = model_dim // num_heads
 
     # 给最初的模型应用, 输入的特征, 给embedding的输出用的
     # 在输入lm_head之前需要把特征旋转回来
-    model.model.Q = Q
+    model1.model1.Q = Q
     gc.collect()
     torch.cuda.empty_cache()
-    layers = model.model.layers
+    layers = model1.model1.layers
 
     # 刚开始的特征需要旋转, 旋转从Embedding开始
-    model.model.RotateEmbedding = Q
+    model1.model1.RotateEmbedding = Q
 
     for idx, layer in enumerate(tqdm.tqdm(layers, unit="layer", desc="Rotating")):
         """这些都是可以offline计算的旋转矩阵, 受到结构的限制, 这里全局都是一个Q"""
@@ -199,18 +200,19 @@ def init_rotate_to_model(model):
         # KVCache的旋转塞给Attention
 
         # KVCache可以直接旋转, 两个都旋转Q就好, 因为本身就是会转置的, 这里需要的不同就是, 每个head得对应有自己的旋转矩阵
-        layer.self_attn.RotateDataQK = RotateModule(hidden_size=model.config.hidden_size,
-                                                    num_attention_heads=model.config.num_attention_heads)
+        layer.self_attn.RotateDataQK = RotateModule(hidden_size=model1.config.hidden_size,
+                                                    num_attention_heads=model1.config.num_attention_heads)
 
         # 这里要对应的再去旋转一下down_proj, 因为外部的x已经通过旋转
-        Q_down_proj = RotateModule(model.config.intermediate_size)
+        Q_down_proj = RotateModule(model1.config.intermediate_size)
         layer.mlp.down_proj.RotateDataIn = Q_down_proj
         layer.mlp.down_proj.RotateWeightIn = Q_down_proj
 
         # TODO: 这里还缺一个Value的旋转和对应的权重的旋转
-        Q_v_o = RotateModule(hidden_size=model.config.hidden_size, num_attention_heads=model.config.num_attention_heads)
+        Q_v_o = RotateModule(hidden_size=model1.config.hidden_size,
+                             num_attention_heads=model1.config.num_attention_heads)
         layer.self_attn.RotateDataV = Q_v_o
-        layer.self_attn.o_proj = Q_v_o
+        layer.self_attn.o_proj.RotateO = Q_v_o
 
     """经过这些操作之后, 在保持教师和学生都是FP32的情况下, 第一步教师和学生的输出应该是相等的"""
     return Q
@@ -244,6 +246,7 @@ def random_orthogonal_matrix(size, dtype=torch.float32):
 
 
 if __name__ == '__main__':
+    # TODO: 非常重要!!!!一共有12次旋转
     class Attention(nn.Module):
         # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
         # with slight modifications to do CA
@@ -257,8 +260,10 @@ if __name__ == '__main__':
             self.k = nn.Linear(dim, dim, bias=False)
             self.v = nn.Linear(dim, dim, bias=False)
             self.proj = nn.Linear(dim, dim, bias=False)
+            self.norm = LlamaRMSNorm(dim)
 
         def forward(self, x):
+            x = self.norm(x)
             B, N, C = x.shape
             q = self.q(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3) * self.scale
 
@@ -280,118 +285,151 @@ if __name__ == '__main__':
             return x_cls
 
 
+    class FFN(nn.Module):
+        def __init__(self, hidden_size: int, intermediate_size: int):
+            super().__init__()
+            self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
+            self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
+            self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
+
+            self.act_fn = nn.SiLU()
+            self.norm = LlamaRMSNorm(hidden_size)
+
+        def forward(self, x):
+            x = self.norm(x)
+            output = self.act_fn(self.gate_proj(x)) * self.up_proj(x)
+            if hasattr(self, 'RotateDataIn'):
+                output = self.RotateDataIn(output, mode='data_input')
+                print("online part")
+            return self.down_proj(output) + x
+
+
     data = torch.randn(2, 128, 256)
-    model = Attention(dim=256, num_heads=8)
-    output = model(data)
+    model1 = Attention(dim=256, num_heads=8)
+    model2 = FFN(256, 512)
+    output = model2(model1(data))
 
     Q1 = RotateModule(256, num_attention_heads=1)
     Q2 = RotateModule(256, num_attention_heads=8)
     Q3 = RotateModule(256, num_attention_heads=8)
+    Q4 = RotateModule(512, num_attention_heads=1)
 
+    # 旋转qkv对应输入的旋转
     data_rotate = Q1(data, mode='data_input')
-    model.q.weight.data = Q1(model.q.weight.data, mode='weight_input')
-    model.k.weight.data = Q1(model.k.weight.data, mode='weight_input')
-    model.v.weight.data = Q1(model.v.weight.data, mode='weight_input')
+    model1.q.weight.data = Q1(model1.q.weight.data, mode='weight_input')
+    model1.k.weight.data = Q1(model1.k.weight.data, mode='weight_input')
+    model1.v.weight.data = Q1(model1.v.weight.data, mode='weight_input')
 
-    model.qk_rotate = Q2
+    # 用在qk^T的旋转
+    model1.qk_rotate = Q2
 
-    model.proj.weight.data = Q1(model.proj.weight.data, mode='weight_output')
+    # 用在v和out_proj上的旋转
+    model1.v.weight.data = Q3(model1.v.weight.data, mode='weight_v')
+    model1.proj.weight.data = Q3(model1.proj.weight.data, mode='weight_o_proj')
 
-    model.v.weight.data = Q3(model.v.weight.data, mode='weight_v')
+    # 用在out_proj输出的旋转
+    model1.proj.weight.data = Q1(model1.proj.weight.data, mode='weight_output')
 
-    model.proj.weight.data = Q3(model.proj.weight.data, mode='weight_o_proj')
+    # 用在gatemlp输入的 旋转
+    model2.gate_proj.weight.data = Q1(model2.gate_proj.weight.data, mode='weight_input')
+    model2.up_proj.weight.data = Q1(model2.up_proj.weight.data, mode='weight_input')
 
-    # model.q_rotate = Q2
+    # 用在中间silu之后的online的旋转
+    model2.RotateDataIn = Q4
+    model2.down_proj.weight.data = Q4(model2.down_proj.weight.data, mode='weight_input')
 
-    output_test = model(data_rotate)
+    # 输出部分的旋转
+    model2.down_proj.weight.data = Q1(model2.down_proj.weight.data, mode='weight_output')
+
+    output_test = model2(model1(data_rotate))
     print(f"{torch.abs(Q1(output, mode='data_input') - output_test).abs().max():.10f}")
 
-    def diff_abs_max(output1, output2):
-        return (output2 - output1).abs().max()
-
-
-    device = 'mps'
-    if device == 'mps':
-        func = torch.mps.synchronize
-    else:
-        func = torch.cpu.synchronize
-    num = 10
-    N0_ = 2 ** num
-    N1_ = 1
-    batch_size = 4
-    token_num = 10
-    for i in range(num + 1):
-        N0 = N0_ // (2 ** i)
-        N1 = N1_ * (2 ** i)
-        weight = torch.randn(N0 * N1, N0 * N1, device=device, dtype=torch.float32)
-        data = torch.randn(batch_size, token_num, N0 * N1).to(device)
-        rotate_module = RotateModule(hidden_size=N0 * N1).to(device)
-
-        weight_input = rotate_module(weight, mode='weight_input')
-        weight_input1 = rotate_module(weight, mode='weight_input1')
-
-        weight_output = rotate_module(weight, mode='weight_output')
-        weight_output1 = rotate_module(weight, mode='weight_output1')
-
-        data_input = rotate_module(data, mode='data_input')
-        data_input1 = rotate_module(data, mode='data_input1')
-
-        print(f"(N0, N1, diff1, diff2, diff3): "
-              f"({N0:5}, {N1:5}, "
-              f"{diff_abs_max(weight_input, weight_input1):.5f}, "
-              f"{diff_abs_max(weight_output, weight_output1):.5f}, "
-              f"{diff_abs_max(data_input, data_input1):5f})")
-
-    for num_attention_heads in [2, 4, 8, 16]:
-        for i in range(num + 1):
-            N0 = N0_ // (2 ** i)
-            N1 = N1_ * (2 ** i)
-            weight = torch.randn(N0 * N1, N0 * N1, device=device, dtype=torch.float32)
-            data = torch.randn(batch_size, num_attention_heads, token_num, (N0 * N1) // num_attention_heads).to(device)
-            rotate_module = RotateModule(hidden_size=N0 * N1, num_attention_heads=num_attention_heads).to(device)
-
-            data_input = rotate_module(data, mode='data_qk')
-            data_input1 = rotate_module(data, mode='data_qk1')
-
-            output1 = torch.einsum('ihtj,ihkj->ihtk', data, data)
-            output2 = torch.einsum('ihtj,ihkj->ihtk', data_input, data_input)
-
-            print(f"(N0, N1, num_attention_heads, diff, attn): "
-                  f"({N0:5}, {N1:5} {num_attention_heads:5}, "
-                  f"{diff_abs_max(data_input, data_input1):5}, "
-                  f"{diff_abs_max(output1, output2):5})")
-
-    for num_attention_heads in [2, 4, 8, 16]:
-        for i in range(num + 1):
-            N0 = N0_ // (2 ** i)
-            N1 = N1_ * (2 ** i)
-            weight = torch.randn(N0 * N1, N0 * N1, device=device, dtype=torch.float32)
-            rotate_module = RotateModule(hidden_size=N0 * N1, num_attention_heads=num_attention_heads).to(device)
-            data_input = rotate_module(weight, mode='weight_v')
-            data_input1 = rotate_module(weight, mode='weight_v1')
-
-            output1 = torch.einsum('ij,ih->jh', data_input, data_input)
-            output2 = torch.einsum('ij,ih->jh', data_input1, data_input1)
-
-            print(f"(N0, N1, num_attention_heads, diff, attn): "
-                  f"({N0:5}, {N1:5} {num_attention_heads:5}, "
-                  f"{diff_abs_max(data_input, data_input1):5}, "
-                  f"{diff_abs_max(output1, output2):5})")
-
-    for num_attention_heads in [2, 4, 8, 16]:
-        for i in range(num + 1):
-            N0 = N0_ // (2 ** i)
-            N1 = N1_ * (2 ** i)
-            weight = torch.randn(N0 * N1, N0 * N1, device=device, dtype=torch.float32)
-            rotate_module = RotateModule(hidden_size=N0 * N1, num_attention_heads=num_attention_heads).to(device)
-            data_input = rotate_module(weight, mode='weight_o_proj')
-            data_input1 = rotate_module(weight, mode='weight_o_proj1')
-
-            output1 = torch.einsum('ij,ih->jh', data_input, data_input)
-            output2 = torch.einsum('ij,ih->jh', data_input1, data_input1)
-
-            print(output1.shape, output2.shape, data_input.shape, data_input1.shape)
-            print(f"(N0, N1, num_attention_heads, diff, attn): "
-                  f"({N0:5}, {N1:5} {num_attention_heads:5}, "
-                  f"{diff_abs_max(data_input, data_input1):5}, "
-                  f"{diff_abs_max(output1, output2):5})")
+    # def diff_abs_max(output1, output2):
+    #     return (output2 - output1).abs().max()
+    #
+    #
+    # device = 'mps'
+    # if device == 'mps':
+    #     func = torch.mps.synchronize
+    # else:
+    #     func = torch.cpu.synchronize
+    # num = 10
+    # N0_ = 2 ** num
+    # N1_ = 1
+    # batch_size = 4
+    # token_num = 10
+    # for i in range(num + 1):
+    #     N0 = N0_ // (2 ** i)
+    #     N1 = N1_ * (2 ** i)
+    #     weight = torch.randn(N0 * N1, N0 * N1, device=device, dtype=torch.float32)
+    #     data = torch.randn(batch_size, token_num, N0 * N1).to(device)
+    #     rotate_module = RotateModule(hidden_size=N0 * N1).to(device)
+    #
+    #     weight_input = rotate_module(weight, mode='weight_input')
+    #     weight_input1 = rotate_module(weight, mode='weight_input1')
+    #
+    #     weight_output = rotate_module(weight, mode='weight_output')
+    #     weight_output1 = rotate_module(weight, mode='weight_output1')
+    #
+    #     data_input = rotate_module(data, mode='data_input')
+    #     data_input1 = rotate_module(data, mode='data_input1')
+    #
+    #     print(f"(N0, N1, diff1, diff2, diff3): "
+    #           f"({N0:5}, {N1:5}, "
+    #           f"{diff_abs_max(weight_input, weight_input1):.5f}, "
+    #           f"{diff_abs_max(weight_output, weight_output1):.5f}, "
+    #           f"{diff_abs_max(data_input, data_input1):5f})")
+    #
+    # for num_attention_heads in [2, 4, 8, 16]:
+    #     for i in range(num + 1):
+    #         N0 = N0_ // (2 ** i)
+    #         N1 = N1_ * (2 ** i)
+    #         weight = torch.randn(N0 * N1, N0 * N1, device=device, dtype=torch.float32)
+    #         data = torch.randn(batch_size, num_attention_heads, token_num, (N0 * N1) // num_attention_heads).to(device)
+    #         rotate_module = RotateModule(hidden_size=N0 * N1, num_attention_heads=num_attention_heads).to(device)
+    #
+    #         data_input = rotate_module(data, mode='data_qk')
+    #         data_input1 = rotate_module(data, mode='data_qk1')
+    #
+    #         output1 = torch.einsum('ihtj,ihkj->ihtk', data, data)
+    #         output2 = torch.einsum('ihtj,ihkj->ihtk', data_input, data_input)
+    #
+    #         print(f"(N0, N1, num_attention_heads, diff, attn): "
+    #               f"({N0:5}, {N1:5} {num_attention_heads:5}, "
+    #               f"{diff_abs_max(data_input, data_input1):5}, "
+    #               f"{diff_abs_max(output1, output2):5})")
+    #
+    # for num_attention_heads in [2, 4, 8, 16]:
+    #     for i in range(num + 1):
+    #         N0 = N0_ // (2 ** i)
+    #         N1 = N1_ * (2 ** i)
+    #         weight = torch.randn(N0 * N1, N0 * N1, device=device, dtype=torch.float32)
+    #         rotate_module = RotateModule(hidden_size=N0 * N1, num_attention_heads=num_attention_heads).to(device)
+    #         data_input = rotate_module(weight, mode='weight_v')
+    #         data_input1 = rotate_module(weight, mode='weight_v1')
+    #
+    #         output1 = torch.einsum('ij,ih->jh', data_input, data_input)
+    #         output2 = torch.einsum('ij,ih->jh', data_input1, data_input1)
+    #
+    #         print(f"(N0, N1, num_attention_heads, diff, attn): "
+    #               f"({N0:5}, {N1:5} {num_attention_heads:5}, "
+    #               f"{diff_abs_max(data_input, data_input1):5}, "
+    #               f"{diff_abs_max(output1, output2):5})")
+    #
+    # for num_attention_heads in [2, 4, 8, 16]:
+    #     for i in range(num + 1):
+    #         N0 = N0_ // (2 ** i)
+    #         N1 = N1_ * (2 ** i)
+    #         weight = torch.randn(N0 * N1, N0 * N1, device=device, dtype=torch.float32)
+    #         rotate_module = RotateModule(hidden_size=N0 * N1, num_attention_heads=num_attention_heads).to(device)
+    #         data_input = rotate_module(weight, mode='weight_o_proj')
+    #         data_input1 = rotate_module(weight, mode='weight_o_proj1')
+    #
+    #         output1 = torch.einsum('ij,ih->jh', data_input, data_input)
+    #         output2 = torch.einsum('ij,ih->jh', data_input1, data_input1)
+    #
+    #         print(output1.shape, output2.shape, data_input.shape, data_input1.shape)
+    #         print(f"(N0, N1, num_attention_heads, diff, attn): "
+    #               f"({N0:5}, {N1:5} {num_attention_heads:5}, "
+    #               f"{diff_abs_max(data_input, data_input1):5}, "
+    #               f"{diff_abs_max(output1, output2):5})")
