@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import tqdm
-from einops import einsum, rearrange, repeat
+from einops import einsum, rearrange
 
 
 class RotateModule(nn.Module):
@@ -37,9 +37,13 @@ class RotateModule(nn.Module):
             if self.num_attention_heads == 1:
                 param_dict[f'R{index}'] = nn.Parameter(get_orthogonal_matrix(N, mode='random', dtype=self.dtype))
             else:
+                # for i in range(self.num_attention_heads):
+                # param_dict[f'R{index}'] = nn.Parameter(
+                #     repeat(get_orthogonal_matrix(N, mode='random', dtype=self.dtype), 'i j -> k i j',
+                #            k=self.num_attention_heads))
                 param_dict[f'R{index}'] = nn.Parameter(
-                    repeat(get_orthogonal_matrix(N, mode='random', dtype=self.dtype), 'i j -> k i j',
-                           k=self.num_attention_heads))
+                    torch.stack([get_orthogonal_matrix(N, mode='random', dtype=self.dtype) for _ in
+                                 range(self.num_attention_heads)], dim=0))
 
         self.params_dict = nn.ParameterDict(param_dict)
 
@@ -240,6 +244,68 @@ def random_orthogonal_matrix(size, dtype=torch.float32):
 
 
 if __name__ == '__main__':
+    class Attention(nn.Module):
+        # taken from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
+        # with slight modifications to do CA
+        def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
+            super().__init__()
+            self.num_heads = num_heads
+            head_dim = dim // num_heads
+            self.scale = qk_scale or head_dim ** -0.5
+
+            self.q = nn.Linear(dim, dim, bias=False)
+            self.k = nn.Linear(dim, dim, bias=False)
+            self.v = nn.Linear(dim, dim, bias=False)
+            self.proj = nn.Linear(dim, dim, bias=False)
+
+        def forward(self, x):
+            B, N, C = x.shape
+            q = self.q(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3) * self.scale
+
+            k = self.k(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+
+            if hasattr(self, 'qk_rotate'):
+                q = self.qk_rotate(q, mode='data_qk')
+                k = self.qk_rotate(k, mode='data_qk')
+                print("rotate")
+
+            v = self.v(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+
+            attn = (q @ k.transpose(-2, -1))
+            attn = attn.softmax(dim=-1)
+
+            x_cls = (attn @ v).transpose(1, 2).reshape(B, N, C)
+            x_cls = self.proj(x_cls) + x
+
+            return x_cls
+
+
+    data = torch.randn(2, 128, 256)
+    model = Attention(dim=256, num_heads=8)
+    output = model(data)
+
+    Q1 = RotateModule(256, num_attention_heads=1)
+    Q2 = RotateModule(256, num_attention_heads=8)
+    Q3 = RotateModule(256, num_attention_heads=8)
+
+    data_rotate = Q1(data, mode='data_input')
+    model.q.weight.data = Q1(model.q.weight.data, mode='weight_input')
+    model.k.weight.data = Q1(model.k.weight.data, mode='weight_input')
+    model.v.weight.data = Q1(model.v.weight.data, mode='weight_input')
+
+    model.qk_rotate = Q2
+
+    model.proj.weight.data = Q1(model.proj.weight.data, mode='weight_output')
+
+    model.v.weight.data = Q3(model.v.weight.data, mode='weight_v')
+
+    model.proj.weight.data = Q3(model.proj.weight.data, mode='weight_o_proj')
+
+    # model.q_rotate = Q2
+
+    output_test = model(data_rotate)
+    print(f"{torch.abs(Q1(output, mode='data_input') - output_test).abs().max():.10f}")
+
     def diff_abs_max(output1, output2):
         return (output2 - output1).abs().max()
 
@@ -274,7 +340,7 @@ if __name__ == '__main__':
               f"({N0:5}, {N1:5}, "
               f"{diff_abs_max(weight_input, weight_input1):.5f}, "
               f"{diff_abs_max(weight_output, weight_output1):.5f}, "
-              f"{diff_abs_max(data_input, data_input1):})")
+              f"{diff_abs_max(data_input, data_input1):5f})")
 
     for num_attention_heads in [2, 4, 8, 16]:
         for i in range(num + 1):
