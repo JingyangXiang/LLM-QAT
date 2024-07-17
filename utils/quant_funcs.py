@@ -41,7 +41,7 @@ def pseudo_quantize_tensor(tensor, n_bits=8, zero_point=True, q_group_size=-1, p
     tensor = tensor.reshape(org_tensor_shape)
 
     # return the quantized tonsor, the scaling factor and the zero point value
-    # return tensor, scales.view(tensor.shape[0], -1), zeros.view(tensor.shape[0], -1)
+    # return tensor, scales.reshape(tensor.shape[0], -1), zeros.reshape(tensor.shape[0], -1)
     return tensor
 
 
@@ -56,7 +56,7 @@ def quantize_weight_per_channel_absmax(w, n_bits=8):
 @torch.no_grad()
 def quantize_activation_per_token_absmax(t, n_bits=8):
     t_shape = t.shape
-    t = t.view(-1, t_shape[-1])
+    t = t.reshape(-1, t_shape[-1])
     t = pseudo_quantize_tensor(t, n_bits=n_bits, zero_point=True, q_group_size=-1, per_tensor=False, inplace=False)
     return t.reshape(t_shape)
     
@@ -71,6 +71,6 @@ def quantize_weight_per_tensor_absmax(w, n_bits=8):
 @torch.no_grad()
 def quantize_activation_per_tensor_absmax(t, n_bits=8):
     t_shape = t.shape
-    t = t.view(-1, t_shape[-1])
+    t = t.reshape(-1, t_shape[-1])
     t = pseudo_quantize_tensor(t, n_bits=n_bits, zero_point=True, q_group_size=-1, per_tensor=True, inplace=False)
     return t.reshape(t_shape)

@@ -24,18 +24,38 @@ from tools.optimizer import CayleyAdamW
 logger = logging.get_logger(__name__)
 
 
+class KDModule(nn.Module):
+    def __init__(self, student_model, teacher_model):
+        super().__init__()
+        self.student_model = student_model
+        self.teacher_model = teacher_model
+
+    def forward(self, input_ids, labels):
+        if self.training:
+            student_output = self.student_model(input_ids=input_ids, labels=labels)
+            with torch.no_grad():
+                teacher_output = self.teacher_model(input_ids=input_ids, labels=labels)
+            return student_output, teacher_output
+        else:
+            student_output = self.student_model(input_ids=input_ids, labels=labels)
+            return student_output
+
+
 class KDLoss(nn.Module):
     def __init__(self):
         super().__init__()
         self.loss_func = nn.CrossEntropyLoss()
 
     def forward(self, model, inputs, return_outputs):
-        if self.training:
-            student_output, teacher_output = model(**inputs)
-            loss = self.loss_func(student_output.get("logits"), teacher_output.get("logits").detach())
+        # 损失函数是函数, 状态不会切换, 得根据模型的判断状态
+        if model.training:
+            student_output = model(**inputs)
+            with torch.no_grad():
+                teacher_output = model.teacher(**inputs)
+            loss = self.loss_func(student_output.logits, teacher_output.logits.detach())
         else:
             student_output = model(**inputs)
-            loss = student_output.get("loss")
+            loss = student_output.loss
 
         return (loss, student_output) if return_outputs else loss
 
@@ -112,20 +132,3 @@ def create_custom_optimzer(
                 assert len(param.shape) == 2
 
         return CayleyAdamW(params=rotate_paramaters, betas=(beta1, beta2), lr=learning_rate)
-
-
-class KDModule(nn.Module):
-    def __init__(self, student_model, teacher_model):
-        super().__init__()
-        self.student_model = student_model
-        self.teacher_model = teacher_model
-
-    def forward(self, input):
-        if self.training:
-            student_output = self.student_model(**input)
-            with torch.inference_mode():
-                teacher_output = self.teacher_model(**input)
-            return student_output, teacher_output
-        else:
-            student_model = self.student_model(input)
-            return student_model

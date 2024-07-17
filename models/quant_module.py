@@ -22,8 +22,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from functools import partial
-
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -50,16 +48,16 @@ class QuantizeLinear(nn.Linear):
         self.w_bits = w_bits
         self.a_bits = a_bits
         if weight_quant == 'per_channel':
-            self.weight_quant = partial(WeightPerChannelFakeQuantizer.apply, num_bits=w_bits)
+            self.weight_quant = WeightPerChannelFakeQuantizer.apply
         elif weight_quant == 'per_tensor':
-            self.weight_quant = partial(WeightPerTensorFakeQuantizer.apply, num_bits=w_bits)
+            self.weight_quant = WeightPerTensorFakeQuantizer.apply
         else:
             raise NotImplementedError
 
         if act_quant == 'per_token':
-            self.act_quant = partial(ActPerTokenFakeQuantizer.apply, num_bits=a_bits)
+            self.act_quant = ActPerTokenFakeQuantizer.apply
         elif act_quant == 'per_tensor':
-            self.act_quant = partial(ActPerTensorFakeQuantizer.apply, num_bits=a_bits)
+            self.act_quant = ActPerTensorFakeQuantizer.apply
         else:
             raise NotImplementedError
         assert bias is False, "only bias=False is supported"
@@ -82,14 +80,14 @@ class QuantizeLinear(nn.Linear):
             weight = self.RotateWeightO(weight, mode='weight_o_proj')
 
         if self.w_bits < 16:
-            weight = self.weight_quant(weight)
+            weight = self.weight_quant(weight, self.w_bits)
 
         # 这个只在FFN的down_proj上用
         if hasattr(self, "RotateDataIn"):
             input = self.RotateDataIn(input, mode='data_input')
 
         if self.a_bits < 16:
-            input = self.act_quant(input)
+            input = self.act_quant(input, self.a_bits)
 
         return F.linear(input, weight, self.bias)
 

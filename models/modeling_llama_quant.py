@@ -25,7 +25,6 @@
 # limitations under the License.
 """ PyTorch LLaMA model."""
 import math
-from functools import partial
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -239,8 +238,8 @@ class LlamaAttention(nn.Module):
             self.act_quantizer_k = nn.Identity()
             self.act_quantizer_v = nn.Identity()
         else:
-            self.act_quantizer_k = partial(ActPerTokenFakeQuantizer.apply, num_bits=self.kv_bits)
-            self.act_quantizer_v = partial(ActPerTokenFakeQuantizer.apply, num_bits=self.kv_bits)
+            self.act_quantizer_k = ActPerTokenFakeQuantizer.apply
+            self.act_quantizer_v = ActPerTokenFakeQuantizer.apply
 
         if (self.head_dim * self.num_heads) != self.hidden_size:
             raise ValueError(
@@ -312,8 +311,8 @@ class LlamaAttention(nn.Module):
             key_states = self.RotateDataQK(key_states, mode='data_qk')
 
         # TODO: 这里还需要quantization的代码
-        key_states = self.act_quantizer_k(key_states)
-        value_states = self.act_quantizer_v(value_states)
+        key_states = self.act_quantizer_k(key_states, self.kv_bits)
+        value_states = self.act_quantizer_v(value_states, self.kv_bits)
         #######################################################################
 
         # [bsz, nh, t, hd]

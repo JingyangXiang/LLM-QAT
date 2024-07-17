@@ -32,7 +32,7 @@ from models.modeling_llama_quant import (
     LlamaForCausalLM as LlamaForCausalLMQuant,
 )
 from tools import datautils, rotation_utils, utils
-from tools.kd_trainer import KDModule, KDTrainer
+from tools.kd_trainer import KDTrainer
 from tools.process_args import process_args
 
 log = utils.get_logger("clm")
@@ -115,9 +115,7 @@ def train():
         for param in teacher_model.parameters():
             param.requires_grad = False
         teacher_model.config.use_cache = False
-        model = KDModule(student_model, teacher_model)
-    else:
-        model = student_model
+        student_model.teacher = teacher_model
 
     log.info("Complete model loading...")
 
@@ -142,7 +140,7 @@ def train():
     if training_args.use_kd:
         from tools.kd_trainer import KDLoss
         trainer = KDTrainer(
-            model=model,
+            model=student_model,
             tokenizer=tokenizer,
             args=training_args,
             train_dataset=train_data if training_args.do_train else None,

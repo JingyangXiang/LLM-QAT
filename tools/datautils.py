@@ -46,7 +46,7 @@ def get_train_val_dataset(model, calib_dataset='wikitext', nsamples=800, seqlen=
         inp = train_enc.input_ids[:, i:j]
         tar = inp.clone()
         tar[:, :-1] = -100
-        train_loader.append((inp, tar))
+        train_loader.append((inp.squeeze(), tar.squeeze()))
 
     logger.info("get_wikitext2 for testing")
     test_loader = []
@@ -54,7 +54,7 @@ def get_train_val_dataset(model, calib_dataset='wikitext', nsamples=800, seqlen=
         j = i + seqlen
         inp = test_enc.input_ids[:, i:j]
         tar = inp.clone()
-        test_loader.append((inp, tar))
+        test_loader.append((inp.squeeze(), tar.squeeze()))
 
     return train_loader, test_loader
 
@@ -62,12 +62,16 @@ def get_train_val_dataset(model, calib_dataset='wikitext', nsamples=800, seqlen=
 class CustomJsonDataset(torch.utils.data.IterableDataset):
     def __init__(self, dataset):
         self.dataset = dataset
+        self.data_iter = [
+            dict(input_ids=self.dataset[i][0], labels=self.dataset[i][0])
+            for i in range(len(self.dataset))
+        ]
 
     def __len__(self):
-        return len(self.data)
+        return len(self.dataset)
 
     def __getitem__(self, i):
         return dict(input_ids=self.dataset[i][0], labels=self.dataset[i][1])
 
     def __iter__(self):
-        return iter(self.data)
+        return iter(self.data_iter)
