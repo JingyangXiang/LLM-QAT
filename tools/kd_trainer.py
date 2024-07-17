@@ -10,6 +10,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 import torch
 import transformers
 from torch import nn as nn
+from torch.nn import functional as F
 from torch.utils.data import Dataset
 from transformers.data.data_collator import DataCollator
 from transformers.modeling_utils import PreTrainedModel
@@ -24,9 +25,9 @@ from tools.optimizer import CayleyAdamW
 logger = logging.get_logger(__name__)
 
 
-class KDModule(nn.Module):
+class KDModule(PreTrainedModel):
     def __init__(self, student_model, teacher_model):
-        super().__init__()
+        super().__init__(student_model.config)
         self.student_model = student_model
         self.teacher_model = teacher_model
 
@@ -40,19 +41,22 @@ class KDModule(nn.Module):
             student_output = self.student_model(input_ids=input_ids, labels=labels)
             return student_output
 
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        self.student_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
+
 
 class KDLoss(nn.Module):
     def __init__(self):
         super().__init__()
-        self.loss_func = nn.CrossEntropyLoss()
+        self.loss_func = nn.KLDivLoss(reduction='batchmean')
 
     def forward(self, model, inputs, return_outputs):
         # 损失函数是函数, 状态不会切换, 得根据模型的判断状态
         if model.training:
-            student_output = model(**inputs)
-            with torch.no_grad():
-                teacher_output = model.teacher(**inputs)
-            loss = self.loss_func(student_output.logits, teacher_output.logits.detach())
+            student_output, teacher_output = model(**inputs)
+            student_output_log_prob = F.log_softmax(student_output.logits, dim=2)
+            teacher_output_soft = F.softmax(teacher_output.logits, dim=2)
+            loss = self.loss_func(student_output_log_prob, teacher_output_soft)
         else:
             student_output = model(**inputs)
             loss = student_output.loss

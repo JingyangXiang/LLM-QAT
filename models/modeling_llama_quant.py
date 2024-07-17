@@ -311,8 +311,9 @@ class LlamaAttention(nn.Module):
             key_states = self.RotateDataQK(key_states, mode='data_qk')
 
         # TODO: 这里还需要quantization的代码
-        key_states = self.act_quantizer_k(key_states, self.kv_bits)
-        value_states = self.act_quantizer_v(value_states, self.kv_bits)
+        if self.kv_bits < 16:
+            key_states = self.act_quantizer_k(key_states, self.kv_bits)
+            value_states = self.act_quantizer_v(value_states, self.kv_bits)
         #######################################################################
 
         # [bsz, nh, t, hd]

@@ -54,6 +54,8 @@ class RotateModule(nn.Module):
         # TODO: 前向传播逻辑需要修改
         R0, R1 = self.params_dict['R0'], self.params_dict['R1']
         N0, N1 = self.Ns[0], self.Ns[1]
+        input_dtype = input.dtype
+        input = input.to(R0.dtype)
         # if mode.endswith("1"):
         #     raise ValueError("Test mode is not support when training")
         if mode == 'weight_input':
@@ -117,6 +119,7 @@ class RotateModule(nn.Module):
             output = rearrange(output, "b h i -> b (h i)")
         else:
             raise NotImplementedError
+        output = output.to(input_dtype)
         return output
 
 

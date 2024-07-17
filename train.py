@@ -47,6 +47,7 @@ def train():
     dist.init_process_group(backend="nccl")
 
     model_args, data_args, training_args = process_args()
+    device = torch.device(training_args.local_rank)
 
     log.info("Start to load model...")
     # 旋转过程中使用FP32, 否则误差很大
@@ -80,7 +81,7 @@ def train():
         rotation_utils.fuse_layer_norms(student_model)
 
         log.info("Rotate Embedding and Linear Weight for student model...")
-        rotation_utils.init_rotate_to_model(student_model)
+        rotation_utils.init_rotate_to_model(student_model, dtype=dtype)
 
         log.info("Freeze student model...")
         for name, param in student_model.named_parameters():
@@ -97,7 +98,7 @@ def train():
                 param.requires_grad = False
                 log.info(f"Freeze {name}...")
         student_model.config.use_cache = False
-        student_model.cuda()
+        student_model.to(device)
     else:
         raise NotImplementedError
 
@@ -110,12 +111,15 @@ def train():
             device_map=None if len(training_args.fsdp) > 0 else "auto",
         )
         teacher_model.eval()
-        teacher_model.cuda()
+        teacher_model.to(device)
         log.info("Freeze teacher model...")
         for param in teacher_model.parameters():
             param.requires_grad = False
         teacher_model.config.use_cache = False
-        student_model.teacher = teacher_model
+        from tools.kd_trainer import KDModule
+        model = KDModule(student_model, teacher_model)
+    else:
+        model = student_model
 
     log.info("Complete model loading...")
 
@@ -140,7 +144,7 @@ def train():
     if training_args.use_kd:
         from tools.kd_trainer import KDLoss
         trainer = KDTrainer(
-            model=student_model,
+            model=model,
             tokenizer=tokenizer,
             args=training_args,
             train_dataset=train_data if training_args.do_train else None,
@@ -174,8 +178,8 @@ def train():
 
     if training_args.do_eval:
         # Evaluation
-        model.to("cuda")
-        model.eval()
+        student_model.to(device)
+        student_model.eval()
         metrics = trainer.evaluate()
         max_eval_samples = len(valid_data)
         metrics["eval_samples"] = min(max_eval_samples, len(valid_data))
