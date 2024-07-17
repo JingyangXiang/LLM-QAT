@@ -47,7 +47,7 @@ from transformers.utils import (
 )
 
 from models.configuration_llama import LlamaConfig
-from models.utils_quant import QuantizeLinear
+from models.quant_module import QuantizeLinear
 from tools.fake_quant import ActPerTokenFakeQuantizer
 
 logger = logging.get_logger(__name__)
@@ -235,7 +235,7 @@ class LlamaAttention(nn.Module):
         self.a_bits = config.a_bits
         self.kv_bits = config.kv_bits
 
-        if self.kv_bits in [16, 32]:
+        if self.kv_bits >= 16:
             self.act_quantizer_k = nn.Identity()
             self.act_quantizer_v = nn.Identity()
         else:
@@ -293,36 +293,28 @@ class LlamaAttention(nn.Module):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
 
-        query_states = (
-            self.q_proj(hidden_states)
-            .view(bsz, q_len, self.num_heads, self.head_dim)
-            .transpose(1, 2)
-        )
+        query_states = self.q_proj(hidden_states).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
-        # KV_cache quantization
-        if self.kv_bits not in [16, 32] and self.kv_bits < 16:
-            key_states = self.act_quantizer_k.apply(
-                key_states, self.act_clip_val_k, self.kv_bits, False
-            )
-            value_states = self.act_quantizer_v.apply(
-                value_states, self.act_clip_val_v, self.kv_bits, False
-            )
-        key_states = key_states.view(
-            bsz, q_len, self.num_heads, self.head_dim
-        ).transpose(1, 2)
-        value_states = value_states.view(
-            bsz, q_len, self.num_heads, self.head_dim
-        ).transpose(1, 2)
+        key_states = key_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        value_states = value_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
-        query_states, key_states = apply_rotary_pos_emb(
-            query_states, key_states, cos, sin, position_ids
-        )
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+
+        ######################################################################
+        if hasattr(self, "RotateDataQK"):
+            query_states = self.RotateDataQK(query_states, mode='data_qk')
+            key_states = self.RotateDataQK(key_states, mode='data_qk')
+
+        # TODO: 这里还需要quantization的代码
+        key_states = self.act_quantizer_k(key_states)
+        value_states = self.act_quantizer_v(value_states)
+        #######################################################################
 
         # [bsz, nh, t, hd]
 
@@ -333,18 +325,7 @@ class LlamaAttention(nn.Module):
 
         past_key_value = (key_states, value_states) if use_cache else None
 
-        if hasattr(self, "RotateDataQK"):
-            query_states = self.RotateDataQK(query_states, mode='data_qk')
-            key_states = self.RotateDataQK(key_states, mode='data_qk')
-
-        # TODO: 这里还需要quantization的代码
-
-        query_states = self.act_quantizer_k(query_states)
-        key_states = self.act_quantizer_v(value_states)
-
-        attn_weights = torch.matmul(
-            query_states, key_states.transpose(2, 3)
-        ) / math.sqrt(self.head_dim)
+        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
         if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
             raise ValueError(
@@ -686,7 +667,7 @@ class LlamaModel(LlamaPreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         if hasattr(self, "RotateEmbedding"):
-            inputs_embeds = self.RotateEmbedding(inputs_embeds, mode='data_in')
+            inputs_embeds = self.RotateEmbedding(inputs_embeds, mode='data_embed')
 
         # embed positions
         if attention_mask is None:
@@ -784,8 +765,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.model = LlamaModel(config)
-
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.lm_head = QuantizeLinear(config.hidden_size, config.vocab_size, bias=False, w_bits=32, a_bits=32)
 
         # Initialize weights and apply final processing
         self.post_init()

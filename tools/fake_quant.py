@@ -1,14 +1,11 @@
-import torch
+from utils.quant_funcs import *
 
 
 class WeightPerChannelFakeQuantizer(torch.autograd.Function):
     @staticmethod
     def forward(ctx, weight, num_bits):
         # w: (out_features, in_features)
-        scales = weight.abs().max(dim=-1, keepdim=True)[0]
-        q_max = 2 ** (num_bits - 1) - 1
-        scales.clamp_(min=1e-5).div_(q_max)
-        weight = torch.round(weight / scales) * scales
+        weight = quantize_weight_per_channel_absmax(weight, num_bits)
         return weight
 
     @staticmethod
@@ -19,10 +16,7 @@ class WeightPerChannelFakeQuantizer(torch.autograd.Function):
 class WeightPerTensorFakeQuantizer(torch.autograd.Function):
     @staticmethod
     def forward(ctx, weight, num_bits):
-        scales = weight.abs().max()
-        q_max = 2 ** (num_bits - 1) - 1
-        scales.clamp_(min=1e-5).div_(q_max)
-        weight = torch.round(weight / scales) * scales
+        weight = quantize_weight_per_tensor_absmax(weight, num_bits)
         return weight
 
     @staticmethod
@@ -33,14 +27,8 @@ class WeightPerTensorFakeQuantizer(torch.autograd.Function):
 class ActPerTokenFakeQuantizer(torch.autograd.Function):
     @staticmethod
     def forward(ctx, activation, num_bits):
-        t_shape = activation.shape
-        activation = activation.view(-1, t_shape[-1])
-        scales = activation.abs().max(dim=-1, keepdim=True)[0]
-        q_max = 2 ** (num_bits - 1) - 1
-        scales.clamp_(min=1e-5).div_(q_max)
-        activation = torch.round(activation / scales) * scales
-
-        return activation.reshape(t_shape)
+        activation = quantize_activation_per_token_absmax(activation, num_bits)
+        return activation
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -50,14 +38,8 @@ class ActPerTokenFakeQuantizer(torch.autograd.Function):
 class ActPerTensorFakeQuantizer(torch.autograd.Function):
     @staticmethod
     def forward(ctx, activation, num_bits):
-        t_shape = activation.shape
-        activation = activation.view(-1, t_shape[-1])
-        scales = activation.abs().max()
-        q_max = 2 ** (num_bits - 1) - 1
-        scales.clamp_(min=1e-5).div_(q_max)
-        activation = torch.round(activation / scales) * scales
-
-        return activation.reshape(t_shape)
+        activation = quantize_activation_per_tensor_absmax(activation, num_bits)
+        return activation
 
     @staticmethod
     def backward(ctx, grad_output):

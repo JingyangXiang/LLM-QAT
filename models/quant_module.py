@@ -22,6 +22,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from functools import partial
+
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -39,7 +41,7 @@ class QuantizeLinear(nn.Linear):
             w_bits=32,
             a_bits=32,
             weight_quant='per_channel',
-            act_quant="per_token"
+            act_quant="per_token",
     ):
         super(QuantizeLinear, self).__init__(in_features, out_features, bias=bias)
 
@@ -48,40 +50,49 @@ class QuantizeLinear(nn.Linear):
         self.w_bits = w_bits
         self.a_bits = a_bits
         if weight_quant == 'per_channel':
-            self.weight_quant = WeightPerChannelFakeQuantizer.apply
+            self.weight_quant = partial(WeightPerChannelFakeQuantizer.apply, num_bits=w_bits)
         elif weight_quant == 'per_tensor':
-            self.weight_quant = WeightPerTensorFakeQuantizer.apply
+            self.weight_quant = partial(WeightPerTensorFakeQuantizer.apply, num_bits=w_bits)
         else:
             raise NotImplementedError
 
         if act_quant == 'per_token':
-            self.act_quant = ActPerTokenFakeQuantizer.apply
+            self.act_quant = partial(ActPerTokenFakeQuantizer.apply, num_bits=a_bits)
         elif act_quant == 'per_tensor':
-            self.act_quant = ActPerTensorFakeQuantizer.apply
+            self.act_quant = partial(ActPerTensorFakeQuantizer.apply, num_bits=a_bits)
         else:
             raise NotImplementedError
         assert bias is False, "only bias=False is supported"
 
     def forward(self, input):
 
-        # quantize weight
         assert len(self.weight.size()) == 2
         weight = self.weight
 
         if hasattr(self, "RotateWeightIn"):
-            weight = self.RotateWeightIn(weight, mode='weight_inpput')
+            weight = self.RotateWeightIn(weight, mode='weight_input')
 
         if hasattr(self, "RotateWeightOut"):
             weight = self.RotateWeightOut(weight, mode='weight_output')
 
-        if self.w_bits not in [16, 32]:
-            weight = self.weight_quant(weight, self.w_bits)
+        if hasattr(self, 'RotateWeightV'):
+            weight = self.RotateWeightV(weight, mode='weight_v_proj')
 
+        if hasattr(self, "RotateWeightO"):
+            weight = self.RotateWeightO(weight, mode='weight_o_proj')
+
+        if self.w_bits < 16:
+            weight = self.weight_quant(weight)
+
+        # 这个只在FFN的down_proj上用
         if hasattr(self, "RotateDataIn"):
-            input = self.RotateDataIn(weight, mode='data_input')
+            input = self.RotateDataIn(input, mode='data_input')
 
-        # Quantize inputs
-        if self.a_bits not in [16, 32]:
-            input = self.act_quant(input, self.a_bits)
+        if self.a_bits < 16:
+            input = self.act_quant(input)
 
         return F.linear(input, weight, self.bias)
+
+    def extra_repr(self) -> str:
+        return (f'in_features={self.in_features}, out_features={self.out_features}, bias={self.bias is not None}, '
+                f'weight_bits={self.w_bits}, act_bits={self.a_bits}')

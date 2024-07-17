@@ -86,7 +86,7 @@ def train():
         for name, param in student_model.named_parameters():
             # 当一组参数初始化之后幅值好几次的时候, 只会显示第一次的参数, 不过都判断一次就可以了
             rotate_keys = ["RotateWeightOut", "RotateWeightIn", "RotateDataQK",
-                           "RotateEmbedding", "RotateDataV", "RotateO"]
+                           "RotateEmbedding", "RotateWeightV", "RotateWeightO", "RotateDataIn"]
             if any(m in name for m in rotate_keys):
                 # 不冻结旋转矩阵
                 log.info(f"Keep {name} Trainable...")

@@ -70,7 +70,7 @@ class RotateModule(nn.Module):
         elif mode == 'weight_output1':
             # torch.matmul(Q.T, W)
             output = torch.matmul(torch.kron(R0, R1).t(), input)
-        elif mode == 'data_input':
+        elif mode in ['data_input', 'data_embed']:
             # torch.matmul(data, Q)
             assert len(input.shape) == 3
             output = torch.einsum('e j, a e d, d m->a j m', R0, rearrange(input, 'b l (e d)->(b l) e d', e=N0), R1)
@@ -89,13 +89,13 @@ class RotateModule(nn.Module):
             rotate = einsum(R0, R1, "a b c, a d e -> a b d c e")
             rotate = rearrange(rotate, 'a b d c e -> a (b d) (c e)')
             output = torch.einsum("b h l d, h d m -> b h l m", input, rotate)
-        elif mode == 'weight_v':
+        elif mode == 'weight_v_proj':
             # [num_head, N1xN2, N1xN2]
             assert len(input.shape) == 2 and len(R0.shape) == 3 and len(R1.shape) == 3
             output = torch.einsum('h b j,h b n c,h n m->h j m c', R0,
                                   rearrange(input, '(h b n) c -> h b n c', h=self.num_attention_heads, b=N0), R1)
             output = rearrange(output, 'h j m c -> (h j m) c')
-        elif mode == 'weight_v1':
+        elif mode == 'weight_v_proj1':
             rotate = einsum(R0, R1, "a b c, a d e -> a b d c e")
             # [num_head, N1xN2, N1xN2]
             rotate = rearrange(rotate, 'a b d c e -> a (b d) (c e)')
@@ -117,7 +117,6 @@ class RotateModule(nn.Module):
             output = rearrange(output, "b h i -> b (h i)")
         else:
             raise NotImplementedError
-
         return output
 
 
@@ -140,7 +139,7 @@ def fuse_ln_linear(layernorm: torch.nn.Module, linear_layers: typing.Iterable[to
 
 @torch.no_grad()
 def fuse_layer_norms(model):
-    layers = model1.model1.layers
+    layers = model.model.layers
 
     # Fuse the linear operations in Layernorm into the adjacent linear blocks.
     for layer in layers:
@@ -149,7 +148,7 @@ def fuse_layer_norms(model):
         # 每个LlamaDecoderLayer的AttentionLayer
         fuse_ln_linear(layer.input_layernorm, [layer.self_attn.q_proj, layer.self_attn.k_proj, layer.self_attn.v_proj])
 
-    fuse_ln_linear(model1.model1.norm, [model1.lm_head])
+    fuse_ln_linear(model.model.norm, [model.lm_head])
 
 
 def get_greatest_common_factor(N):
@@ -160,62 +159,57 @@ def get_greatest_common_factor(N):
             return i, N // i
 
 
-@torch.inference_mode()
-def init_rotate_to_model(model):
-    Q = RotateModule(model1.config.hidden_size)
-
-    config = model1.config
-    num_heads = config.num_attention_heads
-    model_dim = config.hidden_size
-    head_dim = model_dim // num_heads
+@torch.no_grad()
+def init_rotate_to_model(model, dtype=torch.float32):
+    Q1 = RotateModule(model.config.hidden_size, dtype=dtype)
 
     # 给最初的模型应用, 输入的特征, 给embedding的输出用的
     # 在输入lm_head之前需要把特征旋转回来
-    model1.model1.Q = Q
     gc.collect()
     torch.cuda.empty_cache()
-    layers = model1.model1.layers
+    layers = model.model.layers
 
     # 刚开始的特征需要旋转, 旋转从Embedding开始
-    model1.model1.RotateEmbedding = Q
+    model.model.RotateEmbedding = Q1
+    model.lm_head.RotateWeightIn = Q1
 
     for idx, layer in enumerate(tqdm.tqdm(layers, unit="layer", desc="Rotating")):
         """这些都是可以offline计算的旋转矩阵, 受到结构的限制, 这里全局都是一个Q"""
         # QKV的权重需要乘一个旋转矩阵进行量化
-        layer.self_attn.q_proj.RotateWeightIn = Q
-        layer.self_attn.k_proj.RotateWeightIn = Q
-        layer.self_attn.v_proj.RotateWeightIn = Q
+        layer.self_attn.q_proj.RotateWeightIn = Q1
+        layer.self_attn.k_proj.RotateWeightIn = Q1
+        layer.self_attn.v_proj.RotateWeightIn = Q1
 
         # Attention output的输出维度的旋转
-        layer.self_attn.o_proj.RotateWeightOut = Q
+        layer.self_attn.o_proj.RotateWeightOut = Q1
 
         # FFN层的up_proj和gate_proj
-        layer.mlp.up_proj.RotateWeightIn = Q
-        layer.mlp.gate_proj.RotateWeightIn = Q
+        layer.mlp.up_proj.RotateWeightIn = Q1
+        layer.mlp.gate_proj.RotateWeightIn = Q1
 
         # FFN的输出
-        layer.mlp.down_proj.RotateWeightOut = Q
+        layer.mlp.down_proj.RotateWeightOut = Q1
 
         """剩下的都是需要Online计算的Rotate Matrix"""
-        # KVCache的旋转塞给Attention
-
-        # KVCache可以直接旋转, 两个都旋转Q就好, 因为本身就是会转置的, 这里需要的不同就是, 每个head得对应有自己的旋转矩阵
-        layer.self_attn.RotateDataQK = RotateModule(hidden_size=model1.config.hidden_size,
-                                                    num_attention_heads=model1.config.num_attention_heads)
+        # Q和KVCache种的K可以直接旋转, 两个都旋转Q就好, 因为本身就是会转置的, 这里需要的不同就是, 每个head得对应有自己的旋转矩阵
+        # 这个操作是Online的, 这里抵2个Operation
+        Q2 = RotateModule(hidden_size=model.config.hidden_size,
+                          num_attention_heads=model.config.num_attention_heads)
+        layer.self_attn.RotateDataQK = Q2
 
         # 这里要对应的再去旋转一下down_proj, 因为外部的x已经通过旋转
-        Q_down_proj = RotateModule(model1.config.intermediate_size)
-        layer.mlp.down_proj.RotateDataIn = Q_down_proj
-        layer.mlp.down_proj.RotateWeightIn = Q_down_proj
+        Q3 = RotateModule(model.config.intermediate_size)
+        layer.mlp.down_proj.RotateDataIn = Q3
+        layer.mlp.down_proj.RotateWeightIn = Q3
 
         # TODO: 这里还缺一个Value的旋转和对应的权重的旋转
-        Q_v_o = RotateModule(hidden_size=model1.config.hidden_size,
-                             num_attention_heads=model1.config.num_attention_heads)
-        layer.self_attn.RotateDataV = Q_v_o
-        layer.self_attn.o_proj.RotateO = Q_v_o
+        Q4 = RotateModule(hidden_size=model.config.hidden_size,
+                          num_attention_heads=model.config.num_attention_heads)
+        layer.self_attn.v_proj.RotateWeightV = Q4
+        layer.self_attn.o_proj.RotateWeightO = Q4
 
     """经过这些操作之后, 在保持教师和学生都是FP32的情况下, 第一步教师和学生的输出应该是相等的"""
-    return Q
+    return model
 
 
 def get_orthogonal_matrix(size, mode, dtype=torch.float32):
@@ -239,10 +233,10 @@ def random_orthogonal_matrix(size, dtype=torch.float32):
     torch.Tensor: An orthogonal matrix of the specified size.
     """
     torch.cuda.empty_cache()
-    random_matrix = torch.randn(size, size, dtype=dtype)
+    random_matrix = torch.randn(size, size, dtype=torch.float)
     q, r = torch.linalg.qr(random_matrix)
     q *= torch.sign(torch.diag(r)).unsqueeze(0)
-    return q
+    return q.to(dtype=dtype)
 
 
 if __name__ == '__main__':
@@ -324,7 +318,7 @@ if __name__ == '__main__':
     model1.qk_rotate = Q2
 
     # 用在v和out_proj上的旋转
-    model1.v.weight.data = Q3(model1.v.weight.data, mode='weight_v')
+    model1.v.weight.data = Q3(model1.v.weight.data, mode='weight_v_proj')
     model1.proj.weight.data = Q3(model1.proj.weight.data, mode='weight_o_proj')
 
     # 用在out_proj输出的旋转
