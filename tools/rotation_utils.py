@@ -212,14 +212,14 @@ def init_rotate_to_model(model, dtype=torch.float32):
     return model
 
 
-def get_orthogonal_matrix(size, mode, dtype=torch.float32):
+def get_orthogonal_matrix(size, mode, dtype=torch.float32, device='cpu'):
     if mode == 'random':
-        return random_orthogonal_matrix(size, dtype)
+        return random_orthogonal_matrix(size, dtype, device)
     else:
         raise ValueError(f'Unknown mode {mode}')
 
 
-def random_orthogonal_matrix(size, dtype=torch.float32):
+def random_orthogonal_matrix(size, dtype=torch.float32, device='cpu'):
     """
     Generate a random orthogonal matrix of the specified size.
     First, we generate a random matrix with entries from a standard distribution.
@@ -233,7 +233,7 @@ def random_orthogonal_matrix(size, dtype=torch.float32):
     torch.Tensor: An orthogonal matrix of the specified size.
     """
     torch.cuda.empty_cache()
-    random_matrix = torch.randn(size, size, dtype=torch.float)
+    random_matrix = torch.randn(size, size, dtype=torch.float32, device=device)
     q, r = torch.linalg.qr(random_matrix)
     q *= torch.sign(torch.diag(r)).unsqueeze(0)
     return q.to(dtype=dtype)

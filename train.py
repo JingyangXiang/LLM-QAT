@@ -25,7 +25,7 @@ import math
 import torch
 import transformers
 from torch import distributed as dist
-from transformers import AutoModelForCausalLM, default_data_collator, Trainer
+from transformers import AutoModelForCausalLM, default_data_collator
 
 from models.configuration_llama import LlamaConfig
 from models.modeling_llama_quant import (
@@ -89,11 +89,13 @@ def train():
                            "RotateEmbedding", "RotateWeightV", "RotateWeightO", "RotateDataIn"]
             if any(m in name for m in rotate_keys):
                 # 不冻结旋转矩阵
+                param.requires_grad = True
                 log.info(f"Keep {name} Trainable...")
                 assert param.requires_grad is True
             else:
                 # 冻结剩余的权重
                 param.requires_grad = False
+                log.info(f"Freeze {name}...")
         student_model.config.use_cache = False
         student_model.cuda()
     else:
@@ -149,14 +151,16 @@ def train():
             loss_func=KDLoss()
         )
     else:
-        trainer = Trainer(
-            model=model,
-            tokenizer=tokenizer,
-            args=training_args,
-            train_dataset=train_data if training_args.do_train else None,
-            eval_dataset=valid_data if training_args.do_eval else None,
-            data_collator=default_data_collator,
-        )
+        # 暂时还不支持
+        # trainer = Trainer(
+        #     model=model,
+        #     tokenizer=tokenizer,
+        #     args=training_args,
+        #     train_dataset=train_data if training_args.do_train else None,
+        #     eval_dataset=valid_data if training_args.do_eval else None,
+        #     data_collator=default_data_collator,
+        # )
+        raise NotImplementedError
 
     if training_args.do_train:
         # 在测试前先看看量化之后的模型的PPL
@@ -170,8 +174,8 @@ def train():
         trainer.save_state()
         utils.safe_save_model_for_hf_trainer(trainer, model_args.output_model_local_path)
 
-    # Evaluation
     if training_args.do_eval:
+        # Evaluation
         model.to("cuda")
         model.eval()
         metrics = trainer.evaluate()

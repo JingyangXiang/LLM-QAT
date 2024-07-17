@@ -22,6 +22,7 @@ DEFAULT_UNK_TOKEN = "<unk>"
 
 logger = logging.get_logger(__name__)
 
+
 def set_seed(seed):
     np.random.seed(seed)
     torch.random.manual_seed(seed)
@@ -57,16 +58,16 @@ def get_train_val_dataset(model, calib_dataset='wikitext', nsamples=800, seqlen=
 
     return train_loader, test_loader
 
+
 class CustomJsonDataset(torch.utils.data.IterableDataset):
     def __init__(self, dataset):
-        self.data = dataset
-
+        self.dataset = dataset
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, i):
-        return dict(input_ids=self.data[i][0], labels=self.data[i][1])
+        return dict(input_ids=self.dataset[i][0], labels=self.dataset[i][1])
 
     def __iter__(self):
         return iter(self.data)
