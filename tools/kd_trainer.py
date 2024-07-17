@@ -28,6 +28,7 @@ logger = logging.get_logger(__name__)
 class KDModule(PreTrainedModel):
     def __init__(self, student_model, teacher_model):
         super().__init__(student_model.config)
+
         self.student_model = student_model
         self.teacher_model = teacher_model
 
