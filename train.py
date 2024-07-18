@@ -47,7 +47,7 @@ def train():
     dist.init_process_group(backend="nccl")
 
     model_args, data_args, training_args = process_args()
-    device = torch.device(training_args.local_rank)
+    # device = torch.device(training_args.local_rank)
 
     log.info("Start to load model...")
     # 旋转过程中使用FP32, 否则误差很大
@@ -98,7 +98,7 @@ def train():
                 param.requires_grad = False
                 log.info(f"Freeze {name}...")
         student_model.config.use_cache = False
-        student_model.to(device)
+        # student_model.to(device)
     else:
         raise NotImplementedError
 
@@ -111,7 +111,7 @@ def train():
             device_map=None if len(training_args.fsdp) > 0 else "auto",
         )
         teacher_model.eval()
-        teacher_model.to(device)
+        # teacher_model.to(device)
         log.info("Freeze teacher model...")
         for param in teacher_model.parameters():
             param.requires_grad = False
@@ -178,7 +178,7 @@ def train():
 
     if training_args.do_eval:
         # Evaluation
-        student_model.to(device)
+        # student_model.to(device)
         student_model.eval()
         metrics = trainer.evaluate()
         max_eval_samples = len(valid_data)
