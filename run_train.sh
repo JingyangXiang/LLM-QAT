@@ -17,7 +17,7 @@ torchrun --nproc_per_node=1 --master_port=15001 train.py \
 --bf16 False \
 --log_on_each_node False \
 --logging_dir ./result/llama-7b-hf \
---num_train_epochs 20 \
+--num_train_epochs 1 \
 --per_device_train_batch_size 1 \
 --per_device_eval_batch_size 1 \
 --gradient_accumulation_steps 1 \
