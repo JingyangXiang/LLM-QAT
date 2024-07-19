@@ -667,6 +667,9 @@ class LlamaModel(LlamaPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
+        if not inputs_embeds.requires_grad and self.training:
+            inputs_embeds.requires_grad = True
+
         if hasattr(self, "RotateEmbedding"):
             inputs_embeds = self.RotateEmbedding(inputs_embeds, mode='data_embed')
 
