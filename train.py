@@ -48,6 +48,8 @@ def train():
     # dist.init_process_group(backend="nccl")
 
     model_args, data_args, training_args = process_args()
+    # 设置优化器
+    training_args.optim = "cayley_sgd"
     # device = torch.device(training_args.local_rank)
 
     log.info("Start to load model...")
