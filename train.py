@@ -24,7 +24,6 @@ import math
 
 import torch
 import transformers
-from torch import distributed as dist
 from transformers import AutoModelForCausalLM, default_data_collator
 
 from models.configuration_llama import LlamaConfig
@@ -32,6 +31,7 @@ from models.modeling_llama_quant import (
     LlamaForCausalLM as LlamaForCausalLMQuant,
 )
 from tools import datautils, rotation_utils, utils
+from tools.kd_trainer import KDLoss
 from tools.kd_trainer import KDTrainer
 from tools.process_args import process_args
 
@@ -44,7 +44,8 @@ def skip(*args, **kwargs):
 
 
 def train():
-    dist.init_process_group(backend="nccl")
+    # from torch import distributed as dist
+    # dist.init_process_group(backend="nccl")
 
     model_args, data_args, training_args = process_args()
     # device = torch.device(training_args.local_rank)
@@ -142,7 +143,6 @@ def train():
     log.info("Train dataset size: {}, Val dataset size: {}".format(len(train_dataset), len(valid_dataset)))
 
     if training_args.use_kd:
-        from tools.kd_trainer import KDLoss
         trainer = KDTrainer(
             model=model,
             tokenizer=tokenizer,
@@ -192,7 +192,7 @@ def train():
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
 
-    torch.distributed.barrier()
+    # torch.distributed.barrier()
 
 
 if __name__ == "__main__":

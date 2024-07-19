@@ -47,7 +47,7 @@ from transformers.utils import (
 
 from models.configuration_llama import LlamaConfig
 from models.quant_module import QuantizeLinear
-from tools.fake_quant import ActPerTokenFakeQuantizer
+from tools.fake_quant import ActPerGroupFakeQuantizer
 
 logger = logging.get_logger(__name__)
 
@@ -233,13 +233,14 @@ class LlamaAttention(nn.Module):
         self.w_bits = config.w_bits
         self.a_bits = config.a_bits
         self.kv_bits = config.kv_bits
+        self.kv_group_size = config.kv_group_size
 
         if self.kv_bits >= 16:
             self.act_quantizer_k = nn.Identity()
             self.act_quantizer_v = nn.Identity()
         else:
-            self.act_quantizer_k = ActPerTokenFakeQuantizer.apply
-            self.act_quantizer_v = ActPerTokenFakeQuantizer.apply
+            self.act_quantizer_k = ActPerGroupFakeQuantizer.apply
+            self.act_quantizer_v = ActPerGroupFakeQuantizer.apply
 
         if (self.head_dim * self.num_heads) != self.hidden_size:
             raise ValueError(
@@ -312,8 +313,8 @@ class LlamaAttention(nn.Module):
 
         # TODO: 这里还需要quantization的代码
         if self.kv_bits < 16:
-            key_states = self.act_quantizer_k(key_states, self.kv_bits)
-            value_states = self.act_quantizer_v(value_states, self.kv_bits)
+            key_states = self.act_quantizer_k(key_states, self.kv_bits, self.kv_group_size)
+            value_states = self.act_quantizer_v(value_states, self.kv_bits, self.kv_group_size)
         #######################################################################
 
         # [bsz, nh, t, hd]

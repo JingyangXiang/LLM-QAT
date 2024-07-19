@@ -40,7 +40,10 @@ class ModelArguments:
         default=32,
         metadata={"help": "KV_cache quantization bits."},
     )
-
+    kv_group_size: Optional[int] = field(
+        default=128,
+        metadata={"help": "KV_cache group size."},
+    )
 
 @dataclass
 class DataArguments:

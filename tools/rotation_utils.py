@@ -196,9 +196,10 @@ def init_rotate_to_model(model, dtype=torch.float32):
         """剩下的都是需要Online计算的Rotate Matrix"""
         # Q和KVCache种的K可以直接旋转, 两个都旋转Q就好, 因为本身就是会转置的, 这里需要的不同就是, 每个head得对应有自己的旋转矩阵
         # 这个操作是Online的, 这里抵2个Operation
-        Q2 = RotateModule(hidden_size=model.config.hidden_size,
-                          num_attention_heads=model.config.num_attention_heads)
-        layer.self_attn.RotateDataQK = Q2
+        if model.config.kv_bits < 16:
+            Q2 = RotateModule(hidden_size=model.config.hidden_size,
+                              num_attention_heads=model.config.num_attention_heads)
+            layer.self_attn.RotateDataQK = Q2
 
         # 这里要对应的再去旋转一下down_proj, 因为外部的x已经通过旋转
         Q3 = RotateModule(model.config.intermediate_size)

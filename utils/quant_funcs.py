@@ -1,5 +1,6 @@
 import torch
 
+
 @torch.no_grad()
 def pseudo_quantize_tensor(tensor, n_bits=8, zero_point=True, q_group_size=-1, per_tensor=False, inplace=False):
     """
@@ -15,7 +16,7 @@ def pseudo_quantize_tensor(tensor, n_bits=8, zero_point=True, q_group_size=-1, p
     if zero_point:
         max_val = tensor.amax(dim=1, keepdim=True)
         min_val = tensor.amin(dim=1, keepdim=True)
-        max_int = 2**n_bits - 1
+        max_int = 2 ** n_bits - 1
         min_int = 0
         scales = (max_val - min_val).clamp(min=1e-5) / max_int
         zeros = (-torch.round(min_val / scales)).clamp_(min_int, max_int)
@@ -33,8 +34,8 @@ def pseudo_quantize_tensor(tensor, n_bits=8, zero_point=True, q_group_size=-1, p
         ).mul_(scales)
     else:
         tensor = (
-            torch.clamp(torch.round(tensor / scales) + zeros, min_int, max_int) - zeros
-        ) * scales
+                         torch.clamp(torch.round(tensor / scales) + zeros, min_int, max_int) - zeros
+                 ) * scales
 
     assert torch.isnan(tensor).sum() == 0
 
@@ -50,16 +51,19 @@ def quantize_weight_per_channel_absmax(w, n_bits=8):
     """
     The basic quantization function for weight, activation and KV cache.
     """
-    tensor = pseudo_quantize_tensor(w, n_bits=n_bits, zero_point=False, q_group_size=-1, per_tensor=False, inplace=False)
+    tensor = pseudo_quantize_tensor(w, n_bits=n_bits, zero_point=False, q_group_size=-1, per_tensor=False,
+                                    inplace=False)
     return tensor
-    
+
+
 @torch.no_grad()
 def quantize_activation_per_token_absmax(t, n_bits=8):
     t_shape = t.shape
     t = t.reshape(-1, t_shape[-1])
     t = pseudo_quantize_tensor(t, n_bits=n_bits, zero_point=True, q_group_size=-1, per_tensor=False, inplace=False)
     return t.reshape(t_shape)
-    
+
+
 @torch.no_grad()
 def quantize_weight_per_tensor_absmax(w, n_bits=8):
     """
@@ -67,10 +71,20 @@ def quantize_weight_per_tensor_absmax(w, n_bits=8):
     """
     tensor = pseudo_quantize_tensor(w, n_bits=n_bits, zero_point=False, q_group_size=-1, per_tensor=True, inplace=False)
     return tensor
-    
+
+
 @torch.no_grad()
 def quantize_activation_per_tensor_absmax(t, n_bits=8):
     t_shape = t.shape
     t = t.reshape(-1, t_shape[-1])
     t = pseudo_quantize_tensor(t, n_bits=n_bits, zero_point=True, q_group_size=-1, per_tensor=True, inplace=False)
+    return t.reshape(t_shape)
+
+
+@torch.no_grad()
+def quantize_activation_per_group_absmax(t, n_bits=8, group_size=128):
+    t_shape = t.shape
+    t = t.reshape(-1, t_shape[-1])
+    t = pseudo_quantize_tensor(t, n_bits=n_bits, zero_point=True,
+                               q_group_size=group_size, per_tensor=False, inplace=False)
     return t.reshape(t_shape)
