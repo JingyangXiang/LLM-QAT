@@ -65,6 +65,7 @@ def train():
         student_config.w_bits = model_args.w_bits
         student_config.a_bits = model_args.a_bits
         student_config.kv_bits = model_args.kv_bits
+        student_config.kv_group_size = model_args.kv_group_size
 
         message = f"Train with (w_bit, a_bit, kv_bit): ({model_args.w_bits}, {model_args.a_bits}, {model_args.kv_bits})"
         log.info(message)
