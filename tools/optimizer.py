@@ -29,6 +29,114 @@ def matrix_norm_one(W):
     return out
 
 
+class CayleySGD(Optimizer):
+    r"""This optimizer updates variables with two different routines
+        based on the boolean variable 'stiefel'.
+
+        If stiefel is True, the variables will be updated by SGD-G proposed
+        as decorrelated weight matrix.
+
+        If stiefel is False, the variables will be updated by SGD.
+        This routine was taken from https://github.com/pytorch/pytorch/blob/master/torch/optim/sgd.py.
+
+    Args:
+        params (iterable): iterable of parameters to optimize or dicts defining
+            parameter groups
+
+        -- common parameters
+        lr (float): learning rate
+        momentum (float, optional): momentum factor (default: 0)
+        stiefel (bool, optional): whether to use SGD-G (default: False)
+
+        -- parameters in case stiefel is False
+        weight_decay (float, optional): weight decay (L2 penalty) (default: 0)
+        dampening (float, optional): dampening for momentum (default: 0)
+        nesterov (bool, optional): enables Nesterov momentum (default: False)
+
+        -- parameters in case stiefel is True
+        omega (float, optional): orthogonality regularization factor (default: 0)
+        grad_clip (float, optional): threshold for gradient norm clipping (default: None)
+    """
+
+    def __init__(self, params, lr, momentum=0.9, dampening=0, eps=1e-8, weight_decay=0,
+                 nesterov=False, stiefel=True, grad_clip=None):
+        defaults = dict(lr=lr, momentum=momentum, dampening=dampening, weight_decay=weight_decay, nesterov=nesterov,
+                        stiefel=stiefel, omega=0, grad_clip=grad_clip, eps=eps)
+        if nesterov and (momentum <= 0 or dampening != 0):
+            raise ValueError("Nesterov momentum requires a momentum and zero dampening")
+        super(CayleySGD, self).__init__(params, defaults)
+
+    def __setstate__(self, state):
+        super(CayleySGD, self).__setstate__(state)
+        for group in self.param_groups:
+            group.setdefault('nesterov', False)
+
+    def step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            momentum = group['momentum']
+            stiefel = group['stiefel']
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+
+                # 理论上来说, p一直都应当是一个正交矩阵, p_normalize和p不应该有明显的变化
+                p_normalize = F.normalize(p, dim=-1, p=2)
+
+                # 严格一些是, p必须方阵
+                assert p_normalize.size()[0] <= p_normalize.size()[1] and len(p_normalize.shape) == 2, \
+                    f'p_normalize.size()[0]> p_normalize.size()[1] is not supported'
+
+                if stiefel and p_normalize.size()[0] <= p_normalize.size()[1]:
+
+                    weight_decay = group['weight_decay']
+                    assert weight_decay == 0
+
+                    rand_num = random.randint(1, 101)
+                    if rand_num == 1:
+                        p_normalize, r_temp = torch.linalg.qr(p_normalize)
+                        p_normalize *= torch.sign(torch.diag(r_temp)).unsqueeze(0)
+
+                    g = p.grad.data.view(p.size()[0], -1)
+
+                    lr = group['lr']
+
+                    param_state = self.state[p]
+                    if 'momentum_buffer' not in param_state:
+                        param_state['momentum_buffer'] = torch.zeros_like(g)
+
+                    V = param_state['momentum_buffer']
+                    V = momentum * V - g
+                    MX = torch.einsum("ij, ik -> jk", V, p_normalize)
+                    XMX = torch.einsum('ij, jk -> ik', p_normalize, MX)
+                    XXMX = torch.einsum('ij, ik -> jk', p_normalize, XMX)
+                    W_hat = MX - 0.5 * XXMX
+                    W = W_hat - W_hat.t()
+                    t = 0.5 * 2 / (matrix_norm_one(W) + group['eps'])
+                    alpha = min(t, lr)
+
+                    p_new = CayleyLoop(p_normalize.t(), W, V.t(), alpha)
+                    V_new = torch.einsum("ij, kj->ki", W, p_normalize)  # n-by-p
+
+                    p.data.copy_(p_new.view(p.size()))
+                    V.copy_(V_new)
+                else:
+                    raise NotImplementedError
+
+        return loss
+
+
 class CayleyAdamW(Optimizer):
     r"""Implements AdamW algorithm.
 
@@ -193,7 +301,7 @@ if __name__ == '__main__':
     output_channel = in_channel // 2
     model1 = nn.Linear(in_channel, output_channel, bias=False)
     torch.nn.init.orthogonal_(model1.weight)
-    with torch.inference_mode():
+    with torch.no_grad():
         print(torch.diag(model1.weight @ model1.weight.t()))
     optim1 = CayleyAdamW(model1.parameters(), lr=0.1)
     data1 = torch.randn(batch_size, in_channel)
@@ -210,10 +318,11 @@ if __name__ == '__main__':
     del model1
 
     model2 = nn.Linear(in_channel, output_channel, bias=False)
+    torch.nn.init.orthogonal_(model2.weight)
     with torch.no_grad():
-        model2.weight.data = F.normalize(model2.weight.data, dim=-1)
+        print(torch.diag(model2.weight @ model2.weight.t()))
     data2 = torch.randn(batch_size, in_channel)
-    optim2 = torch.optim.SGD(model2.parameters(), lr=0.1, momentum=0.9)
+    optim2 = CayleySGD(model2.parameters(), lr=0.1, momentum=0.9)
     for i in range(10):
         optim2.zero_grad()
         output = (model2(data2).abs()).mean()
@@ -223,3 +332,19 @@ if __name__ == '__main__':
             print(f"step: {i}, loss: {output.item():.5f}, "
                   f"diag: {torch.diag(model2.weight @ model2.weight.t()).sum().item():.2f}, "
                   f"weight: {torch.mean(model2.weight.flatten()[:6]):.5f}")
+
+    model3 = nn.Linear(in_channel, output_channel, bias=False)
+    torch.nn.init.orthogonal_(model3.weight)
+    with torch.no_grad():
+        print(torch.diag(model3.weight @ model3.weight.t()))
+    data3 = torch.randn(batch_size, in_channel)
+    optim3 = torch.optim.SGD(model3.parameters(), lr=0.1, momentum=0.9)
+    for i in range(10):
+        optim3.zero_grad()
+        output = (model3(data3).abs()).mean()
+        output.backward()
+        optim3.step()
+        with torch.no_grad():
+            print(f"step: {i}, loss: {output.item():.5f}, "
+                  f"diag: {torch.diag(model3.weight @ model3.weight.t()).sum().item():.2f}, "
+                  f"weight: {torch.mean(model3.weight.flatten()[:6]):.5f}")
