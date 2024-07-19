@@ -132,7 +132,7 @@ def create_custom_optimzer(
             print(f"Trainable: {name}, shape: {param.shape}")
             rotate_paramaters.append(param)
             assert any([f"R{i}" in name for i in range(10)])
-            assert len(param.shape) == 2
+            assert len(param.shape) in [2, 3]
 
     if training_args.optim == 'cayley_adamw':
         beta1 = training_args.adam_beta1
