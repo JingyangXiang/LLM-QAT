@@ -1,4 +1,5 @@
 import gc
+import math
 import typing
 
 import numpy as np
@@ -6,6 +7,7 @@ import torch
 import torch.nn as nn
 import tqdm
 from einops import einsum, rearrange
+from scipy.linalg import hadamard
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
 
 
@@ -36,7 +38,7 @@ class RotateModule(nn.Module):
 
         for index, N in enumerate(self.Ns):
             if self.num_attention_heads == 1:
-                param_dict[f'R{index}'] = nn.Parameter(get_orthogonal_matrix(N, mode='random', dtype=self.dtype))
+                param_dict[f'R{index}'] = nn.Parameter(get_orthogonal_matrix(N, mode='hadamard', dtype=self.dtype))
             else:
                 # for i in range(self.num_attention_heads):
                 # param_dict[f'R{index}'] = nn.Parameter(
@@ -44,7 +46,7 @@ class RotateModule(nn.Module):
                 #            k=self.num_attention_heads))
                 # 产生self.num_attention_heads个不同的矩阵
                 param_dict[f'R{index}'] = nn.Parameter(
-                    torch.stack([get_orthogonal_matrix(N, mode='random', dtype=self.dtype) for _ in
+                    torch.stack([get_orthogonal_matrix(N, mode='hadamard', dtype=self.dtype) for _ in
                                  range(self.num_attention_heads)], dim=0))
 
         self.params_dict = nn.ParameterDict(param_dict)
@@ -219,8 +221,19 @@ def init_rotate_to_model(model, dtype=torch.float32):
 def get_orthogonal_matrix(size, mode, dtype=torch.float32, device='cpu'):
     if mode == 'random':
         return random_orthogonal_matrix(size, dtype, device)
+    elif mode == 'hadamard':
+        assert is_pow2(size), f"{size} is not power of two"
+        coefficient = math.sqrt(2) ** math.log2(size)
+        matrix = hadamard(n=size, dtype=np.float32)
+        return torch.from_numpy(matrix).to(dtype=dtype, device=device) / coefficient
     else:
         raise ValueError(f'Unknown mode {mode}')
+
+    pass
+
+
+def is_pow2(n):
+    return (n & (n - 1) == 0) and (n > 0)
 
 
 def random_orthogonal_matrix(size, dtype=torch.float32, device='cpu'):
