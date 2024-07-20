@@ -13,7 +13,7 @@ from transformers.models.llama.modeling_llama import LlamaRMSNorm
 
 class RotateModule(nn.Module):
     # 给全局的旋转矩阵
-    def __init__(self, hidden_size, num_attention_heads=1, dtype=torch.float32, matrix_cost='min'):
+    def __init__(self, hidden_size, num_attention_heads=1, mode='random', dtype=torch.float32, matrix_cost='min'):
         super(RotateModule, self).__init__()
         self.params_dict = None
         # 定义分解多少个矩阵
@@ -24,6 +24,7 @@ class RotateModule(nn.Module):
         self.num_attention_heads = num_attention_heads
         self.dtype = dtype
         self.matrix_cost = matrix_cost
+        self.mode = mode
         self.register_rotate_matrix(matrix_cost=matrix_cost)
 
     def register_rotate_matrix(self, matrix_cost='min'):
@@ -38,7 +39,7 @@ class RotateModule(nn.Module):
 
         for index, N in enumerate(self.Ns):
             if self.num_attention_heads == 1:
-                param_dict[f'R{index}'] = nn.Parameter(get_orthogonal_matrix(N, mode='hadamard', dtype=self.dtype))
+                param_dict[f'R{index}'] = nn.Parameter(get_orthogonal_matrix(N, mode=self.mode, dtype=self.dtype))
             else:
                 # for i in range(self.num_attention_heads):
                 # param_dict[f'R{index}'] = nn.Parameter(
@@ -46,7 +47,7 @@ class RotateModule(nn.Module):
                 #            k=self.num_attention_heads))
                 # 产生self.num_attention_heads个不同的矩阵
                 param_dict[f'R{index}'] = nn.Parameter(
-                    torch.stack([get_orthogonal_matrix(N, mode='hadamard', dtype=self.dtype) for _ in
+                    torch.stack([get_orthogonal_matrix(N, mode=self.mode, dtype=self.dtype) for _ in
                                  range(self.num_attention_heads)], dim=0))
 
         self.params_dict = nn.ParameterDict(param_dict)
@@ -165,8 +166,8 @@ def get_greatest_common_factor(N):
 
 
 @torch.no_grad()
-def init_rotate_to_model(model, dtype=torch.float32):
-    Q1 = RotateModule(model.config.hidden_size, dtype=dtype)
+def init_rotate_to_model(model, dtype=torch.float32, mode='random'):
+    Q1 = RotateModule(model.config.hidden_size, dtype=dtype, mode=mode)
 
     # 给最初的模型应用, 输入的特征, 给embedding的输出用的
     # 在输入lm_head之前需要把特征旋转回来
@@ -199,17 +200,17 @@ def init_rotate_to_model(model, dtype=torch.float32):
         # Q和KVCache种的K可以直接旋转, 两个都旋转Q就好, 因为本身就是会转置的, 这里需要的不同就是, 每个head得对应有自己的旋转矩阵
         # 这个操作是Online的, 这里抵2个Operation
         if model.config.kv_bits < 16:
-            Q2 = RotateModule(hidden_size=model.config.hidden_size,
-                              num_attention_heads=model.config.num_attention_heads)
+            Q2 = RotateModule(hidden_size=model.config.hidden_size, dtype=dtype,
+                              num_attention_heads=model.config.num_attention_heads, mode=mode)
             layer.self_attn.RotateDataQK = Q2
 
         # 这里要对应的再去旋转一下down_proj, 因为外部的x已经通过旋转
-        Q3 = RotateModule(model.config.intermediate_size)
+        Q3 = RotateModule(model.config.intermediate_size, dtype=dtype, mode=mode)
         layer.mlp.down_proj.RotateDataIn = Q3
         layer.mlp.down_proj.RotateWeightIn = Q3
 
         # TODO: 这里还缺一个Value的旋转和对应的权重的旋转
-        Q4 = RotateModule(hidden_size=model.config.hidden_size,
+        Q4 = RotateModule(hidden_size=model.config.hidden_size, dtype=dtype, mode=mode,
                           num_attention_heads=model.config.num_attention_heads)
         layer.self_attn.v_proj.RotateWeightV = Q4
         layer.self_attn.o_proj.RotateWeightO = Q4

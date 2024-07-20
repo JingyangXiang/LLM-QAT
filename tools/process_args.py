@@ -44,6 +44,10 @@ class ModelArguments:
         default=128,
         metadata={"help": "KV_cache group size."},
     )
+    mode: Optional[str] = field(
+        default='random',
+        metadata={"help": "Hadamard or random for rotate matrix."},
+    )
 
 @dataclass
 class DataArguments:

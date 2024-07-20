@@ -129,7 +129,7 @@ def create_custom_optimzer(
     rotate_paramaters = []
     for name, param in model.named_parameters():
         if param.requires_grad:
-            print(f"Trainable: {name}, shape: {param.shape}")
+            # print(f"Trainable: {name}, shape: {param.shape}")
             rotate_paramaters.append(param)
             assert any([f"R{i}" in name for i in range(10)])
             assert len(param.shape) in [2, 3]

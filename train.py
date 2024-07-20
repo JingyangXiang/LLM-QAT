@@ -85,7 +85,7 @@ def train():
         rotation_utils.fuse_layer_norms(student_model)
 
         log.info("Rotate Embedding and Linear Weight for student model...")
-        rotation_utils.init_rotate_to_model(student_model, dtype=dtype)
+        rotation_utils.init_rotate_to_model(student_model, dtype=dtype, mode=model_args.mode)
 
         log.info("Freeze student model...")
         for name, param in student_model.named_parameters():
