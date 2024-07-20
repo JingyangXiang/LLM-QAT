@@ -70,3 +70,17 @@ class HouseholderModule(nn.Module):
             raise NotImplementedError("Unsupported mode {}".format(mode))
         output = output.to(input_dtype)
         return output
+
+
+if __name__ == "__main__":
+    shape = 32
+    data = torch.randn(shape)
+    weight = torch.randn(shape * 4, shape)
+    unit_vector = F.normalize(data, dim=-1)
+    eye = torch.eye(shape)
+    rotate_matrix = eye - 2 * torch.einsum('i,j->ij', unit_vector, unit_vector)
+
+    weight_output1 = weight @ rotate_matrix
+    weight_output2 = 2 * torch.einsum("jm,m,n->jn", weight, unit_vector, unit_vector)
+    weight_output2 = weight - weight_output2
+    print((weight_output1 - weight_output2).abs().max())
