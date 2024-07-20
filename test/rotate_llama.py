@@ -3,6 +3,8 @@ import copy
 import torch
 import transformers
 
+import tools.rotate_module.utils
+import tools.rotation_utils
 from models.configuration_llama import LlamaConfig
 from models.modeling_llama_quant import (
     LlamaForCausalLM as LlamaForCausalLMQuant,
@@ -49,7 +51,7 @@ if __name__ == "__main__":
     ############################################################################
     # 第一步, 合并RMSNorm
     log.info("Fuse RMSNorm/LayerNorm for student model...")
-    rotation_utils.fuse_layer_norms(student_model)
+    tools.rotation_utils.fuse_layer_norms(student_model)
     ############################################################################
     # 第二步, 旋转权重
     log.info("Rotate Embedding and Linear Weight for student model...")

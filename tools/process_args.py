@@ -44,10 +44,6 @@ class ModelArguments:
         default=128,
         metadata={"help": "KV_cache group size."},
     )
-    mode: Optional[str] = field(
-        default='random',
-        metadata={"help": "Hadamard or random for rotate matrix."},
-    )
 
 @dataclass
 class DataArguments:
@@ -95,7 +91,15 @@ class TrainingArguments(transformers.TrainingArguments):
         default=1.0,
         metadata={"help": "Scale of KD loss."},
     )
-
+    cayley_optim: Optional[str] = field(default=None)
+    mode: Optional[str] = field(
+        default='random',
+        metadata={"help": "Hadamard or random for rotate matrix."},
+    )
+    module_type: Optional[str] = field(
+        default='spin',
+        metadata={"help": "Spin, Kornecker or Householder."},
+    )
 
 def process_args():
     parser = transformers.HfArgumentParser(
@@ -110,5 +114,10 @@ def process_args():
     model_args.output_model_local_path = os.path.join(
         model_args.local_dir, "models", str(model_args.output_model_filename)
     )
+
+    training_args.optim = training_args.cayley_optim if training_args.cayley_optim else training_args.optim
+
+    if training_args.module_type in ['spin', 'kornecker']:
+        assert training_args.optim in ['cayley_sgd', 'cayley_optim']
 
     return model_args, data_args, training_args

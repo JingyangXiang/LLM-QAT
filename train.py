@@ -26,13 +26,14 @@ import torch
 import transformers
 from transformers import AutoModelForCausalLM, default_data_collator
 
+import tools.rotate_module.utils
+import tools.rotation_utils
 from models.configuration_llama import LlamaConfig
 from models.modeling_llama_quant import (
     LlamaForCausalLM as LlamaForCausalLMQuant,
 )
 from tools import datautils, rotation_utils, utils
-from tools.kd_trainer import KDLoss
-from tools.kd_trainer import KDTrainer
+from tools.kd_trainer import KDLoss, KDTrainer
 from tools.process_args import process_args
 
 log = utils.get_logger("clm")
@@ -48,8 +49,6 @@ def train():
     # dist.init_process_group(backend="nccl")
 
     model_args, data_args, training_args = process_args()
-    # 设置优化器
-    training_args.optim = "cayley_sgd"
     # device = torch.device(training_args.local_rank)
 
     log.info("Start to load model...")
@@ -82,10 +81,11 @@ def train():
         student_model.eval()
 
         log.info("Fuse RMSNorm/LayerNorm for student model...")
-        rotation_utils.fuse_layer_norms(student_model)
+        tools.rotation_utils.fuse_layer_norms(student_model)
 
         log.info("Rotate Embedding and Linear Weight for student model...")
-        rotation_utils.init_rotate_to_model(student_model, dtype=dtype, mode=model_args.mode)
+        rotation_utils.init_rotate_to_model(student_model, dtype=dtype, mode=training_args.mode,
+                                            module_type=training_args.module_type)
 
         log.info("Freeze student model...")
         for name, param in student_model.named_parameters():

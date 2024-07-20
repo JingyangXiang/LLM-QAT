@@ -115,7 +115,7 @@ class KDTrainer(transformers.Trainer):
 
     def create_optimizer(self) -> "torch.optim.Optimizer":
         if self.optimizer is None:
-            self.optimizer = create_custom_optimzer(self.model, self.args)
+            self.optimizer = create_custom_optimzer(self.model, self.args, )
         return super().create_optimizer()
 
 
@@ -142,4 +142,4 @@ def create_custom_optimzer(
     elif training_args.optim == 'cayley_sgd':
         return CayleySGD(params=rotate_paramaters, lr=learning_rate, momentum=0.9, weight_decay=weight_decay)
     else:
-        raise NotImplementedError
+        pass
