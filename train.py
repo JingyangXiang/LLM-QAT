@@ -51,6 +51,8 @@ def train():
     model_args, data_args, training_args = process_args()
     # device = torch.device(training_args.local_rank)
 
+    log.info(training_args)
+
     log.info("Start to load model...")
     # 旋转过程中使用FP32, 否则误差很大
     # BF16在旋转的那步会直接崩掉, 有问题
@@ -95,12 +97,12 @@ def train():
             if any(m in name for m in rotate_keys):
                 # 不冻结旋转矩阵
                 param.requires_grad = True
-                log.info(f"Keep {name} Trainable...")
+                log.info(f"Keep {name} {param.shape} Trainable...")
                 assert param.requires_grad is True
             else:
                 # 冻结剩余的权重
                 param.requires_grad = False
-                log.info(f"Freeze {name}...")
+                # log.info(f"Freeze {name}...")
         student_model.config.use_cache = False
         # student_model.to(device)
     else:

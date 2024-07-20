@@ -115,8 +115,14 @@ class KDTrainer(transformers.Trainer):
 
     def create_optimizer(self) -> "torch.optim.Optimizer":
         if self.optimizer is None:
-            self.optimizer = create_custom_optimzer(self.model, self.args, )
-        return super().create_optimizer()
+            self.optimizer = create_custom_optimzer(self.model, self.args)
+        optimizer = super().create_optimizer()
+        if self.args.optim == 'sgd':
+            for param in optimizer.param_groups:
+                param['momentum'] = 0.9
+                param['weight_decay'] = 0.0001
+            print(optimizer)
+        return optimizer
 
 
 def create_custom_optimzer(
@@ -132,7 +138,7 @@ def create_custom_optimzer(
             # print(f"Trainable: {name}, shape: {param.shape}")
             rotate_paramaters.append(param)
             assert any([f"R{i}" in name for i in range(10)])
-            assert len(param.shape) in [2, 3]
+            assert len(param.shape) in [1, 2, 3]
 
     if training_args.optim == 'cayley_adamw':
         beta1 = training_args.adam_beta1

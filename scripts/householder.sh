@@ -27,9 +27,9 @@ python3 train.py \
 --report_to "tensorboard" \
 --save_total_limit 1 \
 --learning_rate 1.5 \
---weight_decay 0. \
+--weight_decay 0.0 \
 --warmup_ratio 0. \
---lr_scheduler_type "cosine" \
+--lr_scheduler_type "constant" \
 --logging_steps 1 \
 --tf32 True \
 --gradient_checkpointing True \
@@ -39,4 +39,5 @@ python3 train.py \
 --kv_bits $3 \
 --use_kd True \
 --module_type householder \
+--optim sgd \
 --save_safetensors False
