@@ -44,27 +44,30 @@ class HouseholderModule(nn.Module):
 
         if mode == 'weight_input':
             # torch.matmul(W_, Q)
-            output = torch.matmul(input, R0)
+            assert len(unit_vector.shape) == 1
+            output = input - 2 * torch.einsum("jm,m,n->jn", input, unit_vector, unit_vector)
         elif mode == 'weight_output':
             # torch.matmul(Q.T, W)
-            output = torch.matmul(R0.t(), input)
+            assert len(unit_vector.shape) == 1
+            output = input - 2 * torch.einsum('i,j,jm->im', unit_vector, unit_vector, input)
         elif mode in ['data_input', "data_embed"]:
             # torch.matmul(data, Q)
-            assert len(input.shape) == 3
-            output = torch.matmul(input, R0)
+            assert len(input.shape) == 3 and len(unit_vector.shape) == 1
+            output = input - 2 * torch.einsum('bhj,j,i->bhi', input, unit_vector, unit_vector)
         elif mode in ['data_qk', ]:
-            output = torch.einsum("b h l d, h d m -> b h l m", input, R0)
+            assert len(unit_vector.shape) == 2
+            output = input - 2 * torch.einsum('b h l d, h d, h j -> b h l j', input, unit_vector, unit_vector)
         elif mode == 'weight_v_proj':
             # [num_head, N1xN2, N1xN2]
             # [out_channel, in_channel] -> [num_heads, N1xN2, in_channel]
-            output = torch.einsum("b l d, b l c -> b d c", R0,
-                                  rearrange(input, "(b l) c-> b l c", b=self.num_attention_heads))
+            output = rearrange(input, "(b l) c-> b l c", b=self.num_attention_heads)
+            output = output - 2 * torch.einsum('b l, b d, b l c -> b d c', unit_vector, unit_vector, output)
             output = rearrange(output, "b l c -> (b l) c")
         elif mode == 'weight_o_proj':
             # torch.matmul(W_, Q)
             # [num_head, N1xN2, N1xN2]
-            input = rearrange(input, "b (h c) -> b h c", h=self.num_attention_heads)
-            output = torch.einsum('b h c, h c i -> b h i', input, R0)
+            output = rearrange(input, "b (h c) -> b h c", h=self.num_attention_heads)
+            output = output - 2 * torch.einsum('b h c, h c, h i -> b h i', output, unit_vector, unit_vector)
             output = rearrange(output, "b h i -> b (h i)")
         else:
             raise NotImplementedError("Unsupported mode {}".format(mode))
