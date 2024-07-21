@@ -21,7 +21,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -62,7 +62,24 @@ class QuantizeLinear(nn.Linear):
             raise NotImplementedError
         assert bias is False, "only bias=False is supported"
 
-    def forward(self, input):
+    @torch.no_grad()
+    def get_weight_max(self):
+        # 在Fuse RMSNorm之后, 每次forward需要得到权权重in_channel的绝对值最大值用来作为smoot的factor
+        weight = self.weight
+        if hasattr(self, "RotateWeightIn"):
+            weight = self.RotateWeightIn(weight, mode='weight_input')
+
+        if hasattr(self, "RotateWeightOut"):
+            weight = self.RotateWeightOut(weight, mode='weight_output')
+
+        if hasattr(self, 'RotateWeightV'):
+            weight = self.RotateWeightV(weight, mode='weight_v_proj')
+
+        if hasattr(self, "RotateWeightO"):
+            weight = self.RotateWeightO(weight, mode='weight_o_proj')
+        return weight.abs().max(dim=0).values
+
+    def forward(self, input, **kwargs):
 
         assert len(self.weight.size()) == 2
         weight = self.weight
@@ -80,6 +97,10 @@ class QuantizeLinear(nn.Linear):
             weight = self.RotateWeightO(weight, mode='weight_o_proj')
 
         if self.w_bits < 16:
+            if kwargs.get("smooth_factor", None):
+                smooth_factor = kwargs['smooth_factor']
+                assert len(smooth_factor.shape) == 1 and smooth_factor.numel() == self.weight.shape[-1]
+                weight = weight / smooth_factor
             weight = self.weight_quant(weight, self.w_bits)
 
         # 这个只在FFN的down_proj上用
@@ -87,6 +108,10 @@ class QuantizeLinear(nn.Linear):
             input = self.RotateDataIn(input, mode='data_input')
 
         if self.a_bits < 16:
+            if kwargs.get("smooth_factor", None):
+                smooth_factor = kwargs['smooth_factor']
+                assert len(smooth_factor.shape) == 1 and smooth_factor.numel() == input.shape[-1]
+                input = input * smooth_factor
             input = self.act_quant(input, self.a_bits)
 
         return F.linear(input, weight, self.bias)

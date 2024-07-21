@@ -20,16 +20,18 @@ class Attention(nn.Module):
     def forward(self, x):
         x = self.norm(x)
         B, N, C = x.shape
-        q = self.q(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3) * self.scale
-
-        k = self.k(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        qkvx = x
+        if hasattr(self, "input_scale"):
+            qkvx = qkvx * self.input_scale
+        q = self.q(qkvx).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3) * self.scale
+        k = self.k(qkvx).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
 
         if hasattr(self, 'qk_rotate'):
             q = self.qk_rotate(q, mode='data_qk')
             k = self.qk_rotate(k, mode='data_qk')
             print("rotate")
 
-        v = self.v(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        v = self.v(qkvx).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
 
         attn = (q @ k.transpose(-2, -1))
         attn = attn.softmax(dim=-1)

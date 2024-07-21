@@ -140,5 +140,10 @@ if __name__ == '__main__':
         # 输出部分的旋转
         model2.down_proj.weight.data = Q1(model2.down_proj.weight.data, mode='weight_output')
 
+        model1.input_scale = torch.randn(256)
+        model1.q.weight.data = model1.q.weight.data / model1.input_scale
+        model1.k.weight.data = model1.k.weight.data / model1.input_scale
+        model1.v.weight.data = model1.v.weight.data / model1.input_scale
+
         output_test = model2(model1(data_rotate))
         print(f"{torch.abs(Q1(output, mode='data_input') - output_test).abs().max():.10f}")

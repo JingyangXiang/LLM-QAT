@@ -293,9 +293,14 @@ class LlamaAttention(nn.Module):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
 
-        query_states = self.q_proj(hidden_states).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
+        max_value = torch.stack(
+            [self.q_proj.get_weight_max(), self.v_proj.get_weight_max(), self.k_proj.get_weight_max()], dim=0)
+        max_value = torch.max(max_value, dim=0).values
+
+        query_states = self.q_proj(hidden_states, smooth_factor=max_value)
+        query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        key_states = self.k_proj(hidden_states, smooth_factor=max_value)
+        value_states = self.v_proj(hidden_states, smooth_factor=max_value)
 
         key_states = key_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
