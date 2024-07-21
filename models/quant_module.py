@@ -96,22 +96,19 @@ class QuantizeLinear(nn.Linear):
         if hasattr(self, "RotateWeightO"):
             weight = self.RotateWeightO(weight, mode='weight_o_proj')
 
-        if self.w_bits < 16:
-            if kwargs.get("smooth_factor", None):
-                smooth_factor = kwargs['smooth_factor']
-                assert len(smooth_factor.shape) == 1 and smooth_factor.numel() == self.weight.shape[-1]
-                weight = weight / smooth_factor
-            weight = self.weight_quant(weight, self.w_bits)
-
         # 这个只在FFN的down_proj上用
         if hasattr(self, "RotateDataIn"):
             input = self.RotateDataIn(input, mode='data_input')
 
-        if self.a_bits < 16:
-            if kwargs.get("smooth_factor", None):
+        if self.w_bits < 16:
+            if kwargs.get("smooth_factor", None) is not None:
                 smooth_factor = kwargs['smooth_factor']
-                assert len(smooth_factor.shape) == 1 and smooth_factor.numel() == input.shape[-1]
+                assert len(smooth_factor.shape) == 1 and smooth_factor.numel() == self.weight.shape[-1]
+                weight = weight / smooth_factor
                 input = input * smooth_factor
+            weight = self.weight_quant(weight, self.w_bits)
+
+        if self.a_bits < 16:
             input = self.act_quant(input, self.a_bits)
 
         return F.linear(input, weight, self.bias)
