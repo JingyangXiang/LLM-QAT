@@ -217,7 +217,10 @@ class LlamaMLP(nn.Module):
         self.act_fn = ACT2FN[hidden_act]
 
     def forward(self, x):
-        return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        max_value = torch.stack([self.gate_proj.get_weight_max(), self.up_proj.get_weight_max()], dim=0)
+        max_value = torch.max(max_value, dim=0).values
+        return self.down_proj(
+            self.act_fn(self.gate_proj(x, smooth_factor=max_value)) * self.up_proj(x, smooth_factor=max_value))
 
 
 class LlamaAttention(nn.Module):
