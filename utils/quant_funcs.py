@@ -2,7 +2,8 @@ import torch
 
 
 @torch.no_grad()
-def pseudo_quantize_tensor(tensor, n_bits=8, zero_point=True, q_group_size=-1, per_tensor=False, inplace=False):
+def pseudo_quantize_tensor(tensor, n_bits=8, zero_point=True, q_group_size=-1, per_tensor=False, inplace=False,
+                           clip_ratio=1.):
     """
     The basic quantization function for weight, activation and KV cache.
     """
@@ -14,14 +15,14 @@ def pseudo_quantize_tensor(tensor, n_bits=8, zero_point=True, q_group_size=-1, p
         tensor = tensor.reshape(1, -1)
     assert tensor.dim() == 2
     if zero_point:
-        max_val = tensor.amax(dim=1, keepdim=True)
-        min_val = tensor.amin(dim=1, keepdim=True)
+        max_val = tensor.amax(dim=1, keepdim=True) * clip_ratio
+        min_val = tensor.amin(dim=1, keepdim=True) * clip_ratio
         max_int = 2 ** n_bits - 1
         min_int = 0
         scales = (max_val - min_val).clamp(min=1e-5) / max_int
         zeros = (-torch.round(min_val / scales)).clamp_(min_int, max_int)
     else:
-        max_val = tensor.abs().amax(dim=1, keepdim=True)
+        max_val = tensor.abs().amax(dim=1, keepdim=True) * clip_ratio
         max_val = max_val.clamp(min=1e-5)
         max_int = 2 ** (n_bits - 1) - 1
         min_int = -(2 ** (n_bits - 1))
@@ -52,7 +53,7 @@ def quantize_weight_per_channel_absmax(w, n_bits=8):
     The basic quantization function for weight, activation and KV cache.
     """
     tensor = pseudo_quantize_tensor(w, n_bits=n_bits, zero_point=False, q_group_size=-1, per_tensor=False,
-                                    inplace=False)
+                                    inplace=False, clip_ratio=0.9)
     return tensor
 
 
@@ -69,7 +70,8 @@ def quantize_weight_per_tensor_absmax(w, n_bits=8):
     """
     The basic quantization function for weight, activation and KV cache.
     """
-    tensor = pseudo_quantize_tensor(w, n_bits=n_bits, zero_point=False, q_group_size=-1, per_tensor=True, inplace=False)
+    tensor = pseudo_quantize_tensor(w, n_bits=n_bits, zero_point=False, q_group_size=-1, per_tensor=True, inplace=False,
+                                    clip_ratio=0.9)
     return tensor
 
 
