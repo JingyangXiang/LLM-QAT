@@ -33,7 +33,8 @@ from models.modeling_llama_quant import (
     LlamaForCausalLM as LlamaForCausalLMQuant,
 )
 from tools import datautils, rotation_utils, utils
-from tools.kd_trainer import KDLoss, KDTrainer
+from tools.engine.kd_trainer import KDLoss, KDTrainer
+from tools.engine.naive_trainer import NaiveTrainer
 from tools.process_args import process_args
 
 log = utils.get_logger("clm")
@@ -122,7 +123,7 @@ def train():
         for param in teacher_model.parameters():
             param.requires_grad = False
         teacher_model.config.use_cache = False
-        from tools.kd_trainer import KDModule
+        from tools.engine.kd_trainer import KDModule
         model = KDModule(student_model, teacher_model)
     else:
         model = student_model
@@ -158,16 +159,14 @@ def train():
             loss_func=KDLoss()
         )
     else:
-        # 暂时还不支持
-        # trainer = Trainer(
-        #     model=model,
-        #     tokenizer=tokenizer,
-        #     args=training_args,
-        #     train_dataset=train_data if training_args.do_train else None,
-        #     eval_dataset=valid_data if training_args.do_eval else None,
-        #     data_collator=default_data_collator,
-        # )
-        raise NotImplementedError
+        trainer = NaiveTrainer(
+            model=model,
+            tokenizer=tokenizer,
+            args=training_args,
+            train_dataset=train_data if training_args.do_train else None,
+            eval_dataset=valid_data if training_args.do_eval else None,
+            data_collator=default_data_collator,
+        )
 
     if training_args.do_train:
         # 在测试前先看看量化之后的模型的PPL
