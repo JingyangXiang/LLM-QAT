@@ -15,6 +15,7 @@ from transformers.data.data_collator import DataCollator
 from transformers.modeling_utils import PreTrainedModel
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from transformers.trainer_callback import TrainerCallback
+from transformers.trainer_pt_utils import LabelSmoother
 from transformers.trainer_utils import EvalPrediction
 from transformers.training_args import TrainingArguments
 from transformers.utils import logging
@@ -42,7 +43,6 @@ class NaiveTrainer(transformers.Trainer):
             callbacks: Optional[List[TrainerCallback]] = None,
             optimizers: Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = (None, None),
             preprocess_logits_for_metrics: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = None,
-            loss_func: nn.Module = None,
     ):
         super(NaiveTrainer, self).__init__(
             model=model,
@@ -57,7 +57,7 @@ class NaiveTrainer(transformers.Trainer):
             optimizers=optimizers,
             preprocess_logits_for_metrics=preprocess_logits_for_metrics,
         )
-        self.loss_func = loss_func
+        self.loss_func = LabelSmoother(epsilon=0.)
 
     def compute_loss(self, model, inputs, return_outputs=False):
         """
@@ -68,17 +68,14 @@ class NaiveTrainer(transformers.Trainer):
         """
         if self.loss_func is None:
             loss = super().compute_loss(model, inputs, return_outputs)
+            return loss
         else:
-            loss = self.loss_func(model, inputs, return_outputs)
-        return loss
+            outputs = model(**inputs)
+            loss = self.loss_func(outputs, inputs.get("labels"), shift_labels=True)
+            return (loss, outputs) if return_outputs else loss
 
     def create_optimizer(self) -> "torch.optim.Optimizer":
         if self.optimizer is None:
             self.optimizer = create_custom_optimzer(self.model, self.args)
         optimizer = super().create_optimizer()
-        if self.args.optim == 'sgd':
-            for param in optimizer.param_groups:
-                param['momentum'] = 0.9
-                param['weight_decay'] = 0.0001
-            print(optimizer)
         return optimizer

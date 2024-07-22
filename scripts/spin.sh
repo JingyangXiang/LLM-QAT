@@ -15,9 +15,10 @@ python3 train.py \
 --model_max_length 2048 \
 --fp16 False \
 --bf16 False \
+--tf32 True \
 --log_on_each_node False \
 --logging_dir ./result/llama-7b-hf \
---num_train_epochs 1 \
+--num_train_epochs $4 \
 --per_device_train_batch_size 1 \
 --per_device_eval_batch_size 1 \
 --gradient_accumulation_steps 1 \
@@ -31,13 +32,10 @@ python3 train.py \
 --warmup_ratio 0. \
 --lr_scheduler_type "cosine" \
 --logging_steps 1 \
---tf32 True \
 --gradient_checkpointing True \
---qat True \
 --w_bits $1 \
 --a_bits $2 \
 --kv_bits $3 \
---use_kd True \
---cayley_optim cayley_sgd \
+--cayley_optim "cayley_sgd" \
 --module_type spin \
 --save_safetensors False

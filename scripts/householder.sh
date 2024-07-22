@@ -15,9 +15,10 @@ python3 train.py \
 --model_max_length 2048 \
 --fp16 False \
 --bf16 False \
+--tf32 True \
 --log_on_each_node False \
 --logging_dir ./result/llama-7b-hf \
---num_train_epochs 1 \
+--num_train_epochs $4 \
 --per_device_train_batch_size 1 \
 --per_device_eval_batch_size 1 \
 --gradient_accumulation_steps 1 \
@@ -26,18 +27,15 @@ python3 train.py \
 --save_steps 2000 \
 --report_to "tensorboard" \
 --save_total_limit 1 \
---learning_rate 1.5 \
---weight_decay 0.0 \
+--learning_rate 15 \
+--weight_decay 0.0001 \
 --warmup_ratio 0. \
 --lr_scheduler_type "constant" \
 --logging_steps 1 \
---tf32 True \
 --gradient_checkpointing True \
---qat True \
 --w_bits $1 \
 --a_bits $2 \
 --kv_bits $3 \
---use_kd True \
---module_type householder \
---optim sgd \
+--module_type "householder" \
+--optim "sgd" \
 --save_safetensors False

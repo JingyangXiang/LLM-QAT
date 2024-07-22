@@ -45,20 +45,21 @@ class ModelArguments:
         metadata={"help": "KV_cache group size."},
     )
 
+
 @dataclass
 class DataArguments:
     max_train_samples: Optional[int] = field(
         default=-1,
         metadata={
             "help": "For debugging purposes or quicker training, truncate the number of training examples to this "
-            "value if set."
+                    "value if set."
         },
     )
     max_eval_samples: Optional[int] = field(
         default=-1,
         metadata={
             "help": "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
-            "value if set."
+                    "value if set."
         },
     )
     train_data_local_path: Optional[str] = field(
@@ -73,33 +74,45 @@ class DataArguments:
     )
 
 
-
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
     cache_dir: Optional[str] = field(default=None)
-    optim: Optional[str] = field(default="adamw_torch")
-    output_dir: Optional[str] = field(default="/tmp/output/")
+    optim: Optional[str] = field(default="sgd")
+    output_dir: Optional[str] = field(default="./output/")
     model_max_length: Optional[int] = field(
-        default=512,
+        default=2048,
         metadata={
             "help": "Maximum sequence length. Sequences will be right padded (and possibly truncated). 512 or 1024"
         },
     )
-    qat: Optional[bool] = field(default=False)
-    use_kd: Optional[bool] = field(default=False)
-    kd_loss_scale: Optional[float] = field(
-        default=1.0,
-        metadata={"help": "Scale of KD loss."},
-    )
-    cayley_optim: Optional[str] = field(default=None)
-    mode: Optional[str] = field(
-        default='random',
-        metadata={"help": "Hadamard or random for rotate matrix."},
-    )
+
+    ######################  Module Type  ######################
+    """
+        kornecker / spin -> cayley_sgd / cayley_adam
+        householder      -> SGD
+    """
     module_type: Optional[str] = field(
         default='spin',
         metadata={"help": "Spin, Kornecker or Householder."},
     )
+
+    ##################### Rotate Matrix generate Method ######################
+    mode: Optional[str] = field(
+        default='random',
+        metadata={"help": "Hadamard or random for rotate matrix."},
+    )
+    cayley_optim: Optional[str] = field(default=None)
+
+    ##################### Optimizer #####################
+    weight_decay: float = field(default=0., metadata={"help": "Weight decay for SGD"})
+    momentum: float = field(default=0.9, metadata={"help": "Momentum decay for Momentum if we apply some."})
+
+    #########################################################################################################
+    enable_ln_fuse: bool = field(
+        default=False,
+        metadata={"help": "Whether to fuse RMSNorm/LayerNorm. Remember: if enable, R1 will be applied globally"},
+    )
+
 
 def process_args():
     parser = transformers.HfArgumentParser(

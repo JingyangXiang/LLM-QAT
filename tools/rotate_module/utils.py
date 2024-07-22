@@ -24,8 +24,6 @@ def get_orthogonal_matrix(size, mode, dtype=torch.float32, device='cpu'):
     else:
         raise ValueError(f'Unknown mode {mode}')
 
-    pass
-
 
 def is_pow2(n):
     return (n & (n - 1) == 0) and (n > 0)

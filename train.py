@@ -24,16 +24,13 @@ import math
 
 import torch
 import transformers
-from transformers import AutoModelForCausalLM, default_data_collator
+from transformers import default_data_collator
 
-import tools.rotate_module.utils
-import tools.rotation_utils
 from models.configuration_llama import LlamaConfig
 from models.modeling_llama_quant import (
     LlamaForCausalLM as LlamaForCausalLMQuant,
 )
 from tools import datautils, rotation_utils, utils
-from tools.engine.kd_trainer import KDLoss, KDTrainer
 from tools.engine.naive_trainer import NaiveTrainer
 from tools.process_args import process_args
 
@@ -48,9 +45,9 @@ def skip(*args, **kwargs):
 def train():
     # from torch import distributed as dist
     # dist.init_process_group(backend="nccl")
+    # device = torch.device(training_args.local_rank)
 
     model_args, data_args, training_args = process_args()
-    # device = torch.device(training_args.local_rank)
 
     log.info(training_args)
 
@@ -58,75 +55,53 @@ def train():
     # 旋转过程中使用FP32, 否则误差很大
     # BF16在旋转的那步会直接崩掉, 有问题
     dtype = torch.bfloat16 if training_args.bf16 else torch.float32
-    assert dtype == torch.float32
+    assert dtype == torch.float32, f"dtype={dtype} is not allowed!!!"
     torch.nn.init.kaiming_uniform_ = skip
     torch.nn.init.uniform_ = skip
     torch.nn.init.normal_ = skip
 
-    if training_args.qat:
-        config = LlamaConfig.from_pretrained(model_args.input_model_filename)
-        student_config = copy.deepcopy(config)
-        student_config.w_bits = model_args.w_bits
-        student_config.a_bits = model_args.a_bits
-        student_config.kv_bits = model_args.kv_bits
-        student_config.kv_group_size = model_args.kv_group_size
+    config = LlamaConfig.from_pretrained(model_args.input_model_filename)
+    student_config = copy.deepcopy(config)
+    student_config.w_bits = model_args.w_bits
+    student_config.a_bits = model_args.a_bits
+    student_config.kv_bits = model_args.kv_bits
+    student_config.kv_group_size = model_args.kv_group_size
 
-        message = f"Train with (w_bit, a_bit, kv_bit): ({model_args.w_bits}, {model_args.a_bits}, {model_args.kv_bits})"
-        log.info(message)
-        student_model = LlamaForCausalLMQuant.from_pretrained(
-            pretrained_model_name_or_path=model_args.input_model_filename,
-            config=student_config,
-            cache_dir=training_args.cache_dir,
-            torch_dtype=dtype,
-            low_cpu_mem_usage=True,
-            device_map=None if len(training_args.fsdp) > 0 else "auto",
-        )
-        student_model.eval()
+    message = f"Train with (w_bit, a_bit, kv_bit): ({model_args.w_bits}, {model_args.a_bits}, {model_args.kv_bits})"
+    log.info(message)
+    model = LlamaForCausalLMQuant.from_pretrained(
+        pretrained_model_name_or_path=model_args.input_model_filename,
+        config=student_config,
+        cache_dir=training_args.cache_dir,
+        torch_dtype=dtype,
+        low_cpu_mem_usage=True,
+        device_map=None if len(training_args.fsdp) > 0 else "auto",
+    )
+    model.eval()
 
+    if training_args.enable_ln_fuse:
         log.info("Fuse RMSNorm/LayerNorm for student model...")
-        tools.rotation_utils.fuse_layer_norms(student_model)
+        rotation_utils.fuse_layer_norms(model)
+        rotation_utils.init_rotate_to_model_R1(model, dtype=dtype, mode=training_args.mode, training_args=training_args)
 
-        log.info("Rotate Embedding and Linear Weight for student model...")
-        rotation_utils.init_rotate_to_model(student_model, dtype=dtype, mode=training_args.mode,
-                                            module_type=training_args.module_type)
+    log.info("Rotate Embedding and Linear Weight for student model...")
+    rotation_utils.init_rotate_to_model_R2R3R4(model, dtype=dtype, mode=training_args.mode, training_args=training_args)
 
-        log.info("Freeze student model...")
-        for name, param in student_model.named_parameters():
-            # 当一组参数初始化之后幅值好几次的时候, 只会显示第一次的参数, 不过都判断一次就可以了
-            rotate_keys = ["RotateWeightOut", "RotateWeightIn", "RotateDataQK",
-                           "RotateEmbedding", "RotateWeightV", "RotateWeightO", "RotateDataIn"]
-            if any(m in name for m in rotate_keys):
-                # 不冻结旋转矩阵
-                param.requires_grad = True
-                log.info(f"Keep {name} {param.shape} Trainable...")
-                assert param.requires_grad is True
-            else:
-                # 冻结剩余的权重
-                param.requires_grad = False
-                # log.info(f"Freeze {name}...")
-        student_model.config.use_cache = False
-        # student_model.to(device)
-    else:
-        raise NotImplementedError
-
-    if training_args.use_kd:
-        teacher_model = AutoModelForCausalLM.from_pretrained(
-            pretrained_model_name_or_path=model_args.input_model_filename,
-            cache_dir=training_args.cache_dir,
-            torch_dtype=dtype,
-            low_cpu_mem_usage=True,
-            device_map=None if len(training_args.fsdp) > 0 else "auto",
-        )
-        teacher_model.eval()
-        # teacher_model.to(device)
-        log.info("Freeze teacher model...")
-        for param in teacher_model.parameters():
+    log.info("Freeze student model...")
+    for name, param in model.named_parameters():
+        # 当一组参数初始化之后幅值好几次的时候, 只会显示第一次的参数, 不过都判断一次就可以了
+        rotate_keys = ["RotateWeightOut", "RotateWeightIn", "RotateDataQK",
+                       "RotateEmbedding", "RotateWeightV", "RotateWeightO", "RotateDataIn"]
+        if any(m in name for m in rotate_keys):
+            # 不冻结旋转矩阵
+            param.requires_grad = True
+            log.info(f"Keep {name} {param.shape} Trainable...")
+            assert param.requires_grad is True
+        else:
+            # 冻结剩余的权重
             param.requires_grad = False
-        teacher_model.config.use_cache = False
-        from tools.engine.kd_trainer import KDModule
-        model = KDModule(student_model, teacher_model)
-    else:
-        model = student_model
+            # log.info(f"Freeze {name}...")
+    model.config.use_cache = False
 
     log.info("Complete model loading...")
 
@@ -148,25 +123,14 @@ def train():
     log.info("Complete datasets loading...")
     log.info("Train dataset size: {}, Val dataset size: {}".format(len(train_dataset), len(valid_dataset)))
 
-    if training_args.use_kd:
-        trainer = KDTrainer(
-            model=model,
-            tokenizer=tokenizer,
-            args=training_args,
-            train_dataset=train_data if training_args.do_train else None,
-            eval_dataset=valid_data if training_args.do_eval else None,
-            data_collator=default_data_collator,
-            loss_func=KDLoss()
-        )
-    else:
-        trainer = NaiveTrainer(
-            model=model,
-            tokenizer=tokenizer,
-            args=training_args,
-            train_dataset=train_data if training_args.do_train else None,
-            eval_dataset=valid_data if training_args.do_eval else None,
-            data_collator=default_data_collator,
-        )
+    trainer = NaiveTrainer(
+        model=model,
+        tokenizer=tokenizer,
+        args=training_args,
+        train_dataset=train_data if training_args.do_train else None,
+        eval_dataset=valid_data if training_args.do_eval else None,
+        data_collator=default_data_collator,
+    )
 
     if training_args.do_train:
         # 在测试前先看看量化之后的模型的PPL
@@ -183,7 +147,7 @@ def train():
     if training_args.do_eval:
         # Evaluation
         # student_model.to(device)
-        student_model.eval()
+        model.eval()
         metrics = trainer.evaluate()
         max_eval_samples = len(valid_data)
         metrics["eval_samples"] = min(max_eval_samples, len(valid_data))

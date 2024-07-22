@@ -42,10 +42,10 @@ def fuse_layer_norms(model):
 
 
 @torch.no_grad()
-def init_rotate_to_model(model, dtype=torch.float32, mode='random', module_type='kornecker'):
-    #
+def init_rotate_to_model_R1(model, training_args, dtype=torch.float32, mode='random'):
+    """ 用来外部旋转, 全局的旋转矩阵"""
     rotate_modules = {'kornecker': KorneckerRotate, "spin": SpinRotateModule, "householder": HouseholderModule}
-    module = rotate_modules[module_type]
+    module = rotate_modules[training_args.module_type]
     Q1 = module(model.config.hidden_size, dtype=dtype, mode=mode)
 
     # 给最初的模型应用, 输入的特征, 给embedding的输出用的
@@ -58,7 +58,7 @@ def init_rotate_to_model(model, dtype=torch.float32, mode='random', module_type=
     model.model.RotateEmbedding = Q1
     model.lm_head.RotateWeightIn = Q1
 
-    for idx, layer in enumerate(tqdm.tqdm(layers, unit="layer", desc="Rotating")):
+    for idx, layer in enumerate(tqdm.tqdm(layers, unit="layer", desc="Rotating R1")):
         """这些都是可以offline计算的旋转矩阵, 受到结构的限制, 这里全局都是一个Q"""
         # QKV的权重需要乘一个旋转矩阵进行量化
         layer.self_attn.q_proj.RotateWeightIn = Q1
@@ -74,8 +74,20 @@ def init_rotate_to_model(model, dtype=torch.float32, mode='random', module_type=
 
         # FFN的输出
         layer.mlp.down_proj.RotateWeightOut = Q1
+    return model
 
-        """剩下的都是需要Online计算的Rotate Matrix"""
+
+@torch.no_grad()
+def init_rotate_to_model_R2R3R4(model, training_args, dtype=torch.float32, mode='random'):
+    rotate_modules = {'kornecker': KorneckerRotate, "spin": SpinRotateModule, "householder": HouseholderModule}
+    module = rotate_modules[training_args.module_type]
+
+    gc.collect()
+    torch.cuda.empty_cache()
+    layers = model.model.layers
+
+    for idx, layer in enumerate(tqdm.tqdm(layers, unit="layer", desc="Rotating R2/R3/R4")):
+        """都是需要Online计算的Rotate Matrix"""
         # Q和KVCache种的K可以直接旋转, 两个都旋转Q就好, 因为本身就是会转置的, 这里需要的不同就是, 每个head得对应有自己的旋转矩阵
         # 这个操作是Online的, 这里抵2个Operation
         if model.config.kv_bits < 16:
@@ -88,13 +100,12 @@ def init_rotate_to_model(model, dtype=torch.float32, mode='random', module_type=
         layer.mlp.down_proj.RotateDataIn = Q3
         layer.mlp.down_proj.RotateWeightIn = Q3
 
-        # TODO: 这里还缺一个Value的旋转和对应的权重的旋转
+        # Value的旋转和对应的权重的旋转
         Q4 = module(hidden_size=model.config.hidden_size, dtype=dtype, mode=mode,
                     num_attention_heads=model.config.num_attention_heads)
         layer.self_attn.v_proj.RotateWeightV = Q4
         layer.self_attn.o_proj.RotateWeightO = Q4
 
-    """经过这些操作之后, 在保持教师和学生都是FP32的情况下, 第一步教师和学生的输出应该是相等的"""
     return model
 
 
